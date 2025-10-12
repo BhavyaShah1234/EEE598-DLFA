@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MedMaster</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#6366f1' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+  <div class="flex h-screen">
+    <!-- Sidebar -->
+    <aside class="w-72 shrink-0 h-full border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-[#0f1116] flex flex-col">
+      <div class="p-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2">
+        <button id="logo" class="flex items-center gap-2">
+          <i data-lucide="stethoscope" class="w-5 h-5 text-brand"></i>
+          <span class="font-semibold">MedMaster</span>
+        </button>
+        <button id="new-chat" class="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-transparent bg-brand text-white hover:brightness-110">
+          <i data-lucide="plus" class="w-4 h-4"></i> New chat
+        </button>
+      </div>
+
+      <div class="p-3">
+        <div class="px-3 text-xs uppercase tracking-wide text-zinc-700 dark:text-zinc-400 mb-2">Slave models</div>
+        <div class="space-y-2">
+          <label class="flex items-center justify-between px-3">
+            <span>Clinical NLP</span>
+            <input id="ag-nlp" type="checkbox" class="h-4 w-4" checked/>
+          </label>
+          <label class="flex items-center justify-between px-3">
+            <span>Retrieval</span>
+            <input id="ag-retrieval" type="checkbox" class="h-4 w-4" checked/>
+          </label>
+        </div>
+        <div class="space-y-2 mt-3">
+          <label class="flex items-center justify-between px-3">
+            <span>Image Segmentation</span>
+            <input id="ag-img" type="checkbox" class="h-4 w-4" checked/>
+          </label>
+          <label class="flex items-center justify-between px-3">
+            <span>Diagnosis (exp.)</span>
+            <input id="ag-dx" type="checkbox" class="h-4 w-4"/>
+          </label>
+        </div>
+
+        <div class="h-5"></div>
+        <div class="px-3 text-xs uppercase tracking-wide text-zinc-700 dark:text-zinc-400 mb-2">Chats</div>
+        <div id="chat-list" class="space-y-1">
+          <!-- vertical chat buttons injected here -->
+        </div>
+      </div>
+
+      <div class="mt-auto p-3 border-t border-zinc-200 dark:border-zinc-800">
+        <button id="open-settings" class="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-zinc-200 dark:hover:bg-zinc-800">
+          <i data-lucide="settings" class="w-4 h-4"></i>
+          Settings
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main area -->
+    <div class="flex-1 flex flex-col">
+      <!-- Top bar -->
+      <header class="border-b border-zinc-200 dark:border-zinc-800 px-4 py-3 flex items-center gap-3">
+        <span id="model-chip" class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 hidden">
+          <i data-lucide="brain" class="w-3 h-3"></i> <span id="model-name">unset</span>
+        </span>
+        <span id="files-chip" class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 hidden">
+          <i data-lucide="paperclip" class="w-3 h-3"></i> <span id="file-count">0</span> file(s)
+        </span>
+        <span class="ml-auto text-zinc-600 dark:text-zinc-400 text-xs">Theme: <span id="theme-label">Dark</span></span>
+      </header>
+
+      <main class="flex-1 grid grid-cols-12 gap-4 p-4">
+        <!-- Chat column -->
+        <section class="col-span-12 xl:col-span-9 flex flex-col">
+          <div class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 flex-1 flex flex-col">
+            <div id="chat-window" class="p-4 overflow-auto grow">
+              <div class="block max-w-[90%] rounded-2xl px-4 py-2 mb-2 text-sm leading-relaxed whitespace-pre-wrap mr-auto bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
+                Welcome to MedMaster. Start a new chat or pick one from the left.
+              </div>
+            </div>
+            <div class="border-t border-zinc-200 dark:border-zinc-800 p-3">
+              <div class="flex items-end gap-3">
+                <!-- Input: always white background + black text for maximal contrast -->
+                <textarea id="input" rows="4"
+                  class="w-full rounded-lg border border-zinc-300 px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-brand bg-white text-zinc-900 placeholder-zinc-500"
+                  placeholder="Write your question here..."></textarea>
+
+                <!-- Inline attach / upload -->
+                <label class="inline-flex items-center gap-2 rounded-lg px-3 py-3 text-sm border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100 cursor-pointer">
+                  <i data-lucide="paperclip" class="w-4 h-4"></i>
+                  <input id="file-input" type="file" class="hidden" multiple accept=".pdf,.dcm,image/*"/>
+                  Attach
+                </label>
+                <button id="upload-btn" class="inline-flex items-center gap-2 rounded-lg px-3 py-3 text-sm border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100">
+                  <i data-lucide="upload" class="w-4 h-4"></i> Upload
+                </button>
+                <button id="send" class="inline-flex items-center gap-2 rounded-lg px-4 py-3 text-base border border-transparent bg-brand text-white hover:brightness-110">
+                  <i data-lucide="send" class="w-5 h-5"></i> Send
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Summary pane -->
+        <aside class="col-span-12 xl:col-span-3">
+          <div class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 p-4 h-full flex flex-col">
+            <div class="flex items-center gap-2 mb-2">
+              <i data-lucide="sparkles" class="w-4 h-4 text-brand"></i>
+              <div class="text-sm font-medium">Summary</div>
+            </div>
+            <div id="summary" class="text-sm text-zinc-700 dark:text-zinc-400 whitespace-pre-wrap overflow-auto">
+              Key points from the current chat will appear here.
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+  </div>
+
+  <!-- Settings modal with tabs -->
+  <div id="settings" class="fixed inset-0 hidden items-center justify-center bg-black/60">
+    <div class="w-[44rem] rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center">
+        <div class="text-sm font-medium"><i data-lucide="settings" class="w-4 h-4"></i> Settings</div>
+        <button id="close-settings" class="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800">Close</button>
+      </div>
+
+      <!-- Tabs header -->
+      <div class="flex border-b border-zinc-200 dark:border-zinc-800">
+        <button data-tab="login" class="px-4 py-2 border-b-2 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800">Login</button>
+        <button data-tab="account" class="px-4 py-2 border-b-2 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800">Account</button>
+        <button data-tab="payments" class="px-4 py-2 border-b-2 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800">Payments</button>
+        <button data-tab="theme" class="px-4 py-2 border-b-2 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800">Theme</button>
+        <button data-tab="connection" class="px-4 py-2 border-b-2 border-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800">Connection</button>
+      </div>
+
+      <!-- Tabs content -->
+      <div class="p-4 text-sm">
+        <div data-tabpanel="login" class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block">
+              <div class="mb-1">Email</div>
+              <input id="login-email" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder="you@example.com"/>
+            </label>
+            <label class="block">
+              <div class="mb-1">Password</div>
+              <input id="login-pass" type="password" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder="••••••••"/>
+            </label>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="save-login" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-transparent bg-brand text-white hover:brightness-110">
+              <i data-lucide="save" class="w-4 h-4"></i> Save
+            </button>
+            <span id="login-status" class="text-xs text-zinc-600 dark:text-zinc-400"></span>
+          </div>
+          <p class="text-xs text-zinc-600 dark:text-zinc-400">Demo only: credentials are stored locally in your browser.</p>
+        </div>
+
+        <div data-tabpanel="account" class="hidden space-y-3">
+          <label class="block">
+            <div class="mb-1">Display name</div>
+            <input id="acct-name" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder="MedMaster User"/>
+          </label>
+          <label class="block">
+            <div class="mb-1">Organization</div>
+            <input id="acct-org" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder=""/>
+          </label>
+          <button id="save-acct" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-transparent bg-brand text-white hover:brightness-110">Save</button>
+          <span id="acct-status" class="text-xs text-zinc-600 dark:text-zinc-400"></span>
+        </div>
+
+        <div data-tabpanel="payments" class="hidden space-y-3">
+          <p class="text-zinc-600 dark:text-zinc-400">Prototype only. Add billing later.</p>
+          <label class="block">
+            <div class="mb-1">Card last 4 (mock)</div>
+            <input id="pay-last4" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder="1234"/>
+          </label>
+          <button id="save-pay" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-transparent bg-brand text-white hover:brightness-110">Save</button>
+          <span id="pay-status" class="text-xs text-zinc-600 dark:text-zinc-400"></span>
+        </div>
+
+        <div data-tabpanel="theme" class="hidden space-y-3">
+          <label class="flex items-center gap-2">
+            <input id="theme-toggle" type="checkbox" class="h-4 w-4" checked/>
+            <span>Dark mode</span>
+          </label>
+          <p class="text-xs text-zinc-600 dark:text-zinc-400">Switches UI between light and dark instantly and remembers your choice.</p>
+        </div>
+
+        <div data-tabpanel="connection" class="hidden space-y-3">
+          <label class="block">
+            <div class="mb-1">Backend Base URL</div>
+            <input id="base-url" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900" placeholder="http://localhost:8787"/>
+          </label>
+          <div class="flex gap-2">
+            <select id="model-select" class="w-full rounded-lg border border-zinc-300 px-3 py-2 bg-white text-zinc-900"></select>
+            <button id="refresh-models" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-zinc-300 hover:bg-zinc-100">
+              <i data-lucide="refresh-cw" class="w-4 h-4"></i> Refresh
+            </button>
+          </div>
+          <button id="save-connection" class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm border border-transparent bg-brand text-white hover:brightness-110">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  lucide.createIcons();
+
+  // Tabs
+  const tabBtns = document.querySelectorAll('[data-tab]');
+  const tabPanels = document.querySelectorAll('[data-tabpanel]');
+  function activateTab(name){
+    tabBtns.forEach(b => {
+      const active = b.dataset.tab === name;
+      b.classList.toggle('border-brand', active);
+      b.classList.toggle('text-brand', active);
+    });
+    tabPanels.forEach(p => p.classList.toggle('hidden', p.dataset.tabpanel !== name));
+  }
+  tabBtns.forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+  activateTab('login');
+
+  // Theme
+  const themeLabel = document.getElementById('theme-label');
+  const themeToggle = document.getElementById('theme-toggle');
+  function applyTheme(mode){
+    if(mode === 'dark'){ document.documentElement.classList.add('dark'); themeLabel.textContent = 'Dark'; }
+    else { document.documentElement.classList.remove('dark'); themeLabel.textContent = 'Light'; }
+    localStorage.setItem('medmaster.theme', mode);
+    // Re-create icons to ensure contrast (they inherit currentColor)
+    lucide.createIcons();
+  }
+  const savedTheme = localStorage.getItem('medmaster.theme') || 'dark';
+  applyTheme(savedTheme);
+  if(themeToggle){ themeToggle.checked = (savedTheme === 'dark'); themeToggle.addEventListener('change', e => applyTheme(e.target.checked ? 'dark' : 'light')); }
+
+  // Settings modal
+  const settingsEl = document.getElementById('settings');
+  document.getElementById('open-settings').addEventListener('click', () => { settingsEl.classList.remove('hidden'); settingsEl.classList.add('flex'); });
+  document.getElementById('close-settings').addEventListener('click', () => { settingsEl.classList.add('hidden'); settingsEl.classList.remove('flex'); });
+
+  // State
+  const state = {
+    baseUrl: localStorage.getItem('medmaster.baseUrl') || 'http://localhost:8787',
+    model: localStorage.getItem('medmaster.model') || '',
+    chats: JSON.parse(localStorage.getItem('medmaster.chats') || '[]'),
+    currentChatId: localStorage.getItem('medmaster.currentChatId') || null,
+    inbox: [],
+    agents: JSON.parse(localStorage.getItem('medmaster.agents') || '{"nlp":true,"retrieval":true,"img":true,"dx":false}'),
+    user: {
+      email: localStorage.getItem('medmaster.email') || '',
+      pass: localStorage.getItem('medmaster.pass') || '',
+      name: localStorage.getItem('medmaster.name') || '',
+      org: localStorage.getItem('medmaster.org') || '',
+      last4: localStorage.getItem('medmaster.last4') || ''
+    }
+  };
+
+  // Login/account/payment persistence
+  const emailEl = document.getElementById('login-email');
+  const passEl = document.getElementById('login-pass');
+  const saveLogin = document.getElementById('save-login');
+  const loginStatus = document.getElementById('login-status');
+  emailEl.value = state.user.email; passEl.value = state.user.pass;
+  saveLogin.addEventListener('click', () => {
+    localStorage.setItem('medmaster.email', emailEl.value);
+    localStorage.setItem('medmaster.pass', passEl.value);
+    loginStatus.textContent = 'Saved.'; setTimeout(()=> loginStatus.textContent = '', 1200);
+  });
+
+  const acctName = document.getElementById('acct-name');
+  const acctOrg = document.getElementById('acct-org');
+  const saveAcct = document.getElementById('save-acct');
+  const acctStatus = document.getElementById('acct-status');
+  acctName.value = state.user.name; acctOrg.value = state.user.org;
+  saveAcct.addEventListener('click', () => {
+    localStorage.setItem('medmaster.name', acctName.value);
+    localStorage.setItem('medmaster.org', acctOrg.value);
+    acctStatus.textContent = 'Saved.'; setTimeout(()=> acctStatus.textContent = '', 1200);
+  });
+
+  const payLast4 = document.getElementById('pay-last4');
+  const savePay = document.getElementById('save-pay');
+  const payStatus = document.getElementById('pay-status');
+  payLast4.value = state.user.last4;
+  savePay.addEventListener('click', () => {
+    localStorage.setItem('medmaster.last4', payLast4.value);
+    payStatus.textContent = 'Saved.'; setTimeout(()=> payStatus.textContent = '', 1200);
+  });
+
+  // Connection & models
+  const baseUrlInput = document.getElementById('base-url'); baseUrlInput.value = state.baseUrl;
+  const modelSelect = document.getElementById('model-select');
+  const refreshModels = document.getElementById('refresh-models');
+  const saveConn = document.getElementById('save-connection');
+  const modelChip = document.getElementById('model-chip');
+  const modelName = document.getElementById('model-name');
+
+  async function loadModels(){
+    try{
+      const res = await fetch(state.baseUrl + '/api/models');
+      const js = await res.json();
+      modelSelect.innerHTML = '';
+      (js.models || []).forEach(m => {
+        const opt = document.createElement('option'); opt.value = m.id; opt.textContent = m.name || m.id; modelSelect.appendChild(opt);
+      });
+      if(state.model){ modelSelect.value = state.model; }
+      if(!state.model && js.models?.length){ state.model = js.models[0].id; modelSelect.value = state.model; }
+      modelName.textContent = state.model || 'unset';
+      modelChip.classList.remove('hidden');
+      lucide.createIcons();
+    } catch(e){
+      modelSelect.innerHTML = '<option value=\"\">(failed to load)</option>';
+    }
+  }
+  refreshModels.addEventListener('click', loadModels);
+  saveConn.addEventListener('click', () => {
+    state.baseUrl = baseUrlInput.value.trim() || state.baseUrl;
+    state.model = modelSelect.value;
+    localStorage.setItem('medmaster.baseUrl', state.baseUrl);
+    localStorage.setItem('medmaster.model', state.model);
+    modelName.textContent = state.model || 'unset';
+  });
+  loadModels();
+
+  // Agents toggles
+  const agNlp = document.getElementById('ag-nlp');
+  const agRet = document.getElementById('ag-retrieval');
+  const agImg = document.getElementById('ag-img');
+  const agDx  = document.getElementById('ag-dx');
+  agNlp.checked = state.agents.nlp; agRet.checked = state.agents.retrieval; agImg.checked = state.agents.img; agDx.checked = state.agents.dx;
+  [agNlp, agRet, agImg, agDx].forEach(el => el.addEventListener('change', () => {
+    state.agents = { nlp: agNlp.checked, retrieval: agRet.checked, img: agImg.checked, dx: agDx.checked };
+    localStorage.setItem('medmaster.agents', JSON.stringify(state.agents));
+  }));
+
+  // Chats (vertical list)
+  const chatList = document.getElementById('chat-list');
+  const chatWindow = document.getElementById('chat-window');
+  function persistChats(){
+    localStorage.setItem('medmaster.chats', JSON.stringify(state.chats));
+    localStorage.setItem('medmaster.currentChatId', state.currentChatId || '');
+  }
+  function renderChatList(){
+    chatList.innerHTML = '';
+    state.chats.forEach(c => {
+      const btn = document.createElement('button');
+      btn.className = 'w-full flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-zinc-200 dark:hover:bg-zinc-800';
+      btn.innerHTML = '<i data-lucide=\"message-square\" class=\"w-4 h-4\"></i><span class=\"truncate\">' + (c.title || 'Untitled') + '</span>';
+      btn.addEventListener('click', () => { state.currentChatId = c.id; persistChats(); renderCurrentChat(); });
+      chatList.appendChild(btn);
+    });
+    lucide.createIcons();
+  }
+  function newChat(){
+    const id = 'c_' + Date.now();
+    const chat = { id, title: 'New chat', messages: [], summary: '' };
+    state.chats.unshift(chat);
+    state.currentChatId = id; persistChats(); renderChatList(); renderCurrentChat();
+  }
+  document.getElementById('new-chat').addEventListener('click', newChat);
+  document.getElementById('logo').addEventListener('click', newChat);
+
+  function renderCurrentChat(){
+    const chat = state.chats.find(c => c.id === state.currentChatId);
+    chatWindow.innerHTML = '';
+    if(!chat){
+      const div = document.createElement('div');
+      div.className = 'block max-w-[90%] rounded-2xl px-4 py-2 mb-2 text-sm leading-relaxed whitespace-pre-wrap mr-auto bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100';
+      div.textContent = 'Start a new chat or pick one from the left.';
+      chatWindow.appendChild(div);
+      return;
+    }
+    chat.messages.forEach(m => {
+      const div = document.createElement('div');
+      div.className = 'block max-w-[90%] rounded-2xl px-4 py-2 mb-2 text-sm leading-relaxed whitespace-pre-wrap ' + (m.role==='user' ? 'ml-auto bg-brand text-white' : 'mr-auto bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100');
+      div.textContent = m.content;
+      chatWindow.appendChild(div);
+    });
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    document.getElementById('summary').textContent = chat.summary || 'No summary yet.';
+  }
+  if(!state.chats.length){ newChat(); } else { renderChatList(); renderCurrentChat(); }
+
+  // Files / uploads inline
+  const fileInput = document.getElementById('file-input');
+  const filesChip = document.getElementById('files-chip');
+  const fileCount = document.getElementById('file-count');
+  const uploadBtn = document.getElementById('upload-btn');
+  fileInput.addEventListener('change', e => {
+    const files = Array.from(e.target.files || []);
+    if(!files.length) return;
+    state.inbox.push(...files);
+    filesChip.classList.remove('hidden');
+    fileCount.textContent = state.inbox.length;
+    lucide.createIcons();
+  });
+  uploadBtn.addEventListener('click', async () => {
+    if(!state.inbox.length) return alert('No files to upload.');
+    // If backend present, call it; otherwise just acknowledge
+    try{
+      const fd = new FormData(); state.inbox.forEach(f => fd.append('files', f, f.name));
+      const r = await fetch(state.baseUrl + '/api/ingest', { method: 'POST', body: fd });
+      const js = await r.json();
+      appendMessage('assistant', `Uploaded ${js.saved?.length || 0} file(s).`);
+    }catch{ appendMessage('assistant', `Attached ${state.inbox.length} file(s).`); }
+    state.inbox = []; filesChip.classList.add('hidden');
+  });
+
+  // Chat send
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+  async function callChat(chat){
+    const body = { model: state.model, messages: chat.messages };
+    try{
+      const res = await fetch(state.baseUrl + '/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      return await res.json();
+    } catch(e){
+      return { reply: '(backend not reachable)' };
+    }
+  }
+  function appendMessage(role, content){
+    let chat = state.chats.find(c => c.id === state.currentChatId);
+    if(!chat){ newChat(); chat = state.chats.find(c => c.id === state.currentChatId); }
+    chat.messages.push({ role, content });
+    if(role==='user' && (!chat.title || chat.title==='New chat')){
+      chat.title = content.slice(0, 30) + (content.length>30 ? '…' : '');
+      renderChatList();
+    }
+    persistChats(); renderCurrentChat();
+  }
+  send.addEventListener('click', async () => {
+    const text = input.value.trim(); if(!text) return;
+    appendMessage('user', text); input.value='';
+    const chat = state.chats.find(c => c.id === state.currentChatId);
+    const js = await callChat(chat);
+    appendMessage('assistant', js.reply || '(no reply)');
+    chat.summary = (chat.messages || []).slice(-6).map(m => (m.role==='user'?'• ':'– ') + m.content).join('\n');
+    persistChats(); renderCurrentChat();
+  });
+</script>
+</body>
+</html>
