@@ -103,7 +103,7 @@ import sys
 from pathlib import Path
 from database import Database
 from authenticator import UserAuthenticator
-from models import UniversityChatbot
+from model import UniversityChatbot
 
 
 def initialize_application() -> Database:
