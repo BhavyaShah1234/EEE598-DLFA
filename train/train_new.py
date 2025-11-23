@@ -9,35 +9,27 @@ class ImageEncoder(t.nn.Module):
     """
     def __init__(
             self,
-            device: str = "cuda" if t.cuda.is_available() else "cpu",
-            model_name: str = "openai/clip-vit-large-patch14",
-            use_mixed_precision: bool = False,
-            mixed_precision: str = "bf16",
-            use_quantization: bool = False,
-            quantization: str = "8bit",
-            freeze: bool = False,
-            use_lora: bool = False,
-            lora_r: int = 8,
-            lora_alpha: int = 16,
-            lora_dropout: float = 0.1,
-            lora_target_modules: list = [],
+            device: str,
+            dtype: t.dtype,
+            model_name: str,
+            use_quantization: bool,
+            quantization: str,
+            freeze: bool,
+            use_lora: bool,
+            lora_r: int,
+            lora_alpha: int,
+            lora_dropout: float,
+            lora_target_modules: list,
         ):
         super(ImageEncoder, self).__init__()
         # Determine dtype based on mixed precision settings
-        if use_mixed_precision:
-            if mixed_precision == 'bf16':
-                dtype = t.bfloat16
-            elif mixed_precision == 'fp16':
-                dtype = t.float16
-            else:
-                dtype = t.float32
-        else:
-            dtype = t.float32
+        self.device = device
+        self.dtype = dtype
         # Prepare quantization config if needed
         if use_quantization:
             if quantization == "4bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype or t.float16}")
+                print(f"  → Using 4-bit quantization with dtype={dtype}")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
                 print(f"  → Using 8-bit quantization")
@@ -47,9 +39,9 @@ class ImageEncoder(t.nn.Module):
             quantization_config = None
         # Load pretrained CLIP vision encoder
         if quantization_config is not None:
-            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto")
+            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
         else:
-            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, device_map="auto")
+            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, device_map="auto", dtype=dtype)
         # self.vision_model = self.vision_model.to(device)
         self.config = self.vision_model.config
         self.embed_dim = self.config.hidden_size
@@ -61,7 +53,14 @@ class ImageEncoder(t.nn.Module):
             self.vision_model.requires_grad_(False)
         elif use_lora:
             print(f"  → Applying LoRA to vision encoder (r={lora_r}, alpha={lora_alpha})")
-            lora_config = p.LoraConfig(task_type=p.TaskType.FEATURE_EXTRACTION, r=lora_r, lora_alpha=lora_alpha, target_modules=lora_target_modules, lora_dropout=lora_dropout, bias="none")
+            lora_config = p.LoraConfig(
+                # task_type=p.TaskType.FEATURE_EXTRACTION,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=lora_target_modules,
+                lora_dropout=lora_dropout,
+                bias="none"
+            )
             self.vision_model = p.get_peft_model(self.vision_model, lora_config)
             self.vision_model.print_trainable_parameters()
 
@@ -73,49 +72,41 @@ class ImageEncoder(t.nn.Module):
             features_seq: [B, num_patches+1, embed_dim] - includes CLS token
             spatial_features: [B, embed_dim, H_feat, W_feat] - spatial grid
         """
-        outputs = self.vision_model(pixel_values, output_hidden_states=True)
+        outputs = self.vision_model(pixel_values=pixel_values, output_hidden_states=True)
         features_seq = outputs.last_hidden_state
-        patch_features = features_seq[:, 1:, :]
-        B = patch_features.shape[0]
+        patch_features = features_seq[:, 1:, :]#.unsqueeze(1) if features_seq.dim() == 3 and features_seq.size(1) == 1 else features_seq[:, 1:, :]
+        batch_size = patch_features.shape[0]
         num_patches = patch_features.shape[1]
         H_feat = W_feat = int(num_patches ** 0.5)
-        spatial_features = patch_features.transpose(1, 2).reshape(B, self.embed_dim, H_feat, W_feat)
+        spatial_features = patch_features.transpose(1, 2).reshape(batch_size, self.embed_dim, H_feat, W_feat)
         return features_seq, spatial_features
 
-class LLMTextEncoder(t.nn.Module):
+class TextEncoder(t.nn.Module):
     """
     Wraps a pretrained LLM (LLaMA, Vicuna, etc.) for text encoding.
     """
     def __init__(
             self,
-            device: str = "cuda" if t.cuda.is_available() else "cpu",
-            model_name: str = "openai-community/gpt2",
-            use_mixed_precision: bool = False,
-            mixed_precision: str = 'bf16',
-            use_quantization: bool = False,
-            quantization: str = "8bit",
-            freeze: bool = False,
-            use_lora: bool = False,
-            lora_r: int = 8,
-            lora_alpha: int = 16,
-            lora_dropout: float = 0.1,
-            lora_target_modules: list = [],
+            device: str,
+            dtype: t.dtype,
+            model_name: str,
+            use_quantization: bool,
+            quantization: str,
+            freeze: bool,
+            use_lora: bool,
+            lora_r: int,
+            lora_alpha,
+            lora_dropout,
+            lora_target_modules: list,
         ):
-        super(LLMTextEncoder, self).__init__()
-        if use_mixed_precision:
-            if mixed_precision == 'bf16':
-                dtype = t.bfloat16
-            elif mixed_precision == 'fp16':
-                dtype = t.float16
-            else:
-                dtype = t.float32
-        else:
-            dtype = t.float32
+        super(TextEncoder, self).__init__()
+        self.device = device
+        self.dtype = dtype
         # Prepare quantization config
         if use_quantization:
             if quantization == "4bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype or t.float16}")
+                print(f"  → Using 4-bit quantization with dtype={dtype}")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
                 print(f"  → Using 8-bit quantization")
@@ -125,11 +116,9 @@ class LLMTextEncoder(t.nn.Module):
             quantization_config = None
         # Load pretrained LLM
         if quantization_config is not None:
-            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto")
+            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
         else:
-            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")#.to(device)
-            if dtype != t.float32:
-                self.llm = self.llm.to(dtype)
+            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", dtype=dtype)
         self.tokenizer = tf.AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -140,7 +129,14 @@ class LLMTextEncoder(t.nn.Module):
             self.llm.requires_grad_(False)
         elif use_lora:
             print(f"  → Applying LoRA to LLM (r={lora_r}, alpha={lora_alpha})")
-            lora_config = p.LoraConfig(r=lora_r, lora_alpha=lora_alpha, target_modules=lora_target_modules, lora_dropout=lora_dropout, bias="none", task_type=p.TaskType.CAUSAL_LM)
+            lora_config = p.LoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=lora_target_modules,
+                lora_dropout=lora_dropout,
+                bias="none",
+                task_type=p.TaskType.CAUSAL_LM
+            )
             self.llm = p.get_peft_model(self.llm, lora_config)
             self.llm.print_trainable_parameters()
 
@@ -160,148 +156,31 @@ class LLMTextEncoder(t.nn.Module):
             raise RuntimeError("LLM forward did not return hidden_states; ensure output_hidden_states=True.")
         return outputs.hidden_states[-1]
 
-class Projector(t.nn.Module):
-    """Projects vision features to LLM dimension for multimodal fusion.
-
-    Adds optional dtype casting so inputs and weights match under mixed precision.
-    """
-    def __init__(
-            self,
-            device: str,
-            vision_dim: int,
-            hidden_dim: int,
-            llm_dim: int,
-            num_projection_layers: int,
-            dtype: t.dtype = t.float32,
-        ):
-        super(Projector, self).__init__()
-        modules = []
-        for i in range(num_projection_layers):
-            if i == 0:
-                modules.append(t.nn.Linear(vision_dim, hidden_dim))
-            else:
-                modules.append(t.nn.Linear(hidden_dim, llm_dim))
-            if i < num_projection_layers - 1:
-                modules.append(t.nn.GELU())
-        self.projector = t.nn.Sequential(*modules).to(device)
-        if dtype != t.float32:
-            self.projector = self.projector.to(dtype)
-        self.dtype = dtype
-
-    def forward(self, vision_features: t.Tensor) -> t.Tensor:
-        if vision_features.dtype != self.dtype:
-            vision_features = vision_features.to(self.dtype)
-        return self.projector(vision_features)
-
-class PromptExtractor(t.nn.Module):
-    """Extracts task-specific prompt embeddings from fused VLM features.
-
-    Supports mixed precision by casting internal parameters to requested dtype.
-    """
-    def __init__(
-            self,
-            input_dim: int,
-            hidden_dim: int,
-            output_dim: int,
-            num_prompt_tokens: int,
-            dtype: t.dtype = t.float32,
-        ):
-        super(PromptExtractor, self).__init__()
-        self.num_prompt_tokens = num_prompt_tokens
-        self.output_dim = output_dim
-        self.dtype = dtype
-        self.prompt_queries = t.nn.Parameter(t.randn(1, num_prompt_tokens, input_dim, dtype=dtype) * 0.02)
-        self.cross_attn = t.nn.MultiheadAttention(input_dim, num_heads=8, batch_first=True).to(dtype)
-        self.norm = t.nn.LayerNorm(input_dim).to(dtype)
-        self.projector = t.nn.Sequential(
-            t.nn.Linear(input_dim, hidden_dim),
-            t.nn.GELU(),
-            t.nn.Linear(hidden_dim, output_dim),
-        ).to(dtype)
-
-    def forward(self, vlm_features: t.Tensor) -> t.Tensor:
-        if vlm_features.dtype != self.dtype:
-            vlm_features = vlm_features.to(self.dtype)
-        batch_size = vlm_features.shape[0]
-        queries = self.prompt_queries.expand(batch_size, -1, -1)
-        prompts, _ = self.cross_attn(queries, vlm_features, vlm_features)
-        prompts = self.norm(prompts + queries)
-        prompt_embeddings = self.projector(prompts)
-        return prompt_embeddings
-
-class VisionToSAMAdapter(t.nn.Module):
-    """
-    Adapts the shared vision encoder features to SAM's expected format.
-    """
-    def __init__(
-            self,
-            input_dim: int,
-            sam_embed_dim: int = 256,
-            target_spatial_size: ty.Tuple[int, int] = (64, 64)
-        ):
-        super(VisionToSAMAdapter, self).__init__()
-        self.target_spatial_size = target_spatial_size
-        # Choose a valid number of groups for GroupNorm: must divide sam_embed_dim.
-        max_groups = 32 if sam_embed_dim >= 32 else sam_embed_dim
-        groups = max_groups
-        while groups > 1 and sam_embed_dim % groups != 0:
-            groups -= 1
-        self.projection = t.nn.Sequential(
-            t.nn.Conv2d(input_dim, sam_embed_dim, kernel_size=1),
-            t.nn.GroupNorm(groups, sam_embed_dim),
-            t.nn.Conv2d(sam_embed_dim, sam_embed_dim, kernel_size=3, padding=1),
-            t.nn.GroupNorm(groups, sam_embed_dim),
-        )
-
-    def forward(self, vision_features: t.Tensor) -> t.Tensor:
-        """
-        Args:
-            vision_features: [B, input_dim, H, W]
-        Returns:
-            adapted_features: [B, sam_embed_dim, target_H, target_W]
-        """
-        # Ensure dtype match with projection weights (for mixed precision cases)
-        target_dtype = self.projection[0].weight.dtype
-        if vision_features.dtype != target_dtype:
-            vision_features = vision_features.to(target_dtype)
-        features = self.projection(vision_features)
-        features = t.nn.functional.interpolate(features, size=self.target_spatial_size, mode='bilinear', align_corners=False)
-        return features
-
 class SegmentAnythingModel(t.nn.Module):
     """
     Wraps SAM's pretrained mask decoder to use shared image embeddings.
     """
     def __init__(
             self,
-            device: str = "cuda" if t.cuda.is_available() else "cpu",
-            sam_model_name: str = "facebook/sam-vit-base",
-            use_mixed_precision: bool = False,
-            mixed_precision: str = "bf16",
-            use_quantization: bool = False,
-            quantization: str = "8bit",
-            freeze: bool = False,
-            use_lora: bool = False,
-            lora_r: int = 8,
-            lora_alpha: int = 16,
-            lora_dropout: float = 0.1,
-            lora_target_modules: list = [],
+            device: str,
+            dtype: t.dtype,
+            sam_model_name: str,
+            use_quantization: bool,
+            quantization: str,
+            freeze: bool,
+            use_lora: bool,
+            lora_r: int,
+            lora_alpha: int,
+            lora_dropout: float,
+            lora_target_modules: list,
         ):
         super(SegmentAnythingModel, self).__init__()
         self.device = device
-        if use_mixed_precision:
-            if mixed_precision == 'fp16':
-                dtype = t.float16
-            elif mixed_precision == 'bf16':
-                dtype = t.bfloat16
-            else:
-                dtype = t.float32
-        else:
-            dtype = t.float32
+        self.dtype = dtype
         if use_quantization:
             if quantization == "4bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype or t.float16}")
+                print(f"  → Using 4-bit quantization with dtype={dtype}")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
                 print(f"  → Using 8-bit quantization")
@@ -311,11 +190,9 @@ class SegmentAnythingModel(t.nn.Module):
             quantization_config = None
         print(f"  → Loading pretrained SAM: {sam_model_name}")
         if quantization_config is not None:
-            self.sam = tf.SamModel.from_pretrained(sam_model_name, quantization_config=quantization_config, device_map="auto")
+            self.sam = tf.SamModel.from_pretrained(sam_model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
         else:
-            self.sam = tf.SamModel.from_pretrained(sam_model_name, device_map="auto")#.to(device)
-            if dtype != t.float32:
-                self.sam = self.sam.to(dtype)
+            self.sam = tf.SamModel.from_pretrained(sam_model_name, device_map="auto", dtype=dtype)
         # Apply freeze or LoRA
         if freeze:
             print("  → Freezing SAM")
@@ -351,14 +228,12 @@ class SegmentAnythingModel(t.nn.Module):
             iou_predictions: [B, num_masks]
         """
         batch_size = image_embeddings.shape[0]
-        dense_embeddings = self.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
-            batch_size, -1, image_embeddings.shape[-2], image_embeddings.shape[-1]
-        )
+        dense_embeddings = self.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(batch_size, -1, image_embeddings.shape[-2], image_embeddings.shape[-1])
         # Obtain wide image positional embeddings from SamModel helper (tied with prompt positional embeddings)
-        image_positional_embeddings = self.sam.get_image_wide_positional_embeddings().to(image_embeddings.device)
+        image_positional_embeddings = self.sam.get_image_wide_positional_embeddings()#.to(image_embeddings.device)
         image_positional_embeddings = image_positional_embeddings.repeat(batch_size, 1, 1, 1)
-        if image_positional_embeddings.dtype != image_embeddings.dtype:
-            image_positional_embeddings = image_positional_embeddings.to(image_embeddings.dtype)
+        # if image_positional_embeddings.dtype != image_embeddings.dtype:
+        #     image_positional_embeddings = image_positional_embeddings.to(image_embeddings.dtype)
         # Reshape our custom prompt embeddings to match expected sparse prompt shape: (B, point_batch_size, num_points, hidden)
         # Treat each prompt token as a single point with one coordinate embedding slot.
         sparse_prompt_embeddings = prompt_embeddings.unsqueeze(2)
@@ -369,20 +244,122 @@ class SegmentAnythingModel(t.nn.Module):
             dense_prompt_embeddings=dense_embeddings,
             multimask_output=multimask_output,
         )
+        print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx:', low_res_masks.shape, iou_predictions.shape)
         # SAM returns masks shape: [B, point_batch, num_masks, H, W]
-        if low_res_masks.ndim == 5:
-            B, P, M, H, W = low_res_masks.shape
-            # Flatten point and mask dimensions for downstream simplicity
-            flat_masks = low_res_masks.reshape(B, P * M, H, W)
-        else:
-            flat_masks = low_res_masks
+        batch_size, P, M, height, width = low_res_masks.shape
+        # Flatten point and mask dimensions for downstream simplicity
+        flat_masks = low_res_masks.reshape(batch_size, P * M, height, width)
         # Typically base model outputs 256x256 already; interpolate only if different
-        if flat_masks.shape[-2:] != (256, 256):
-            flat_masks = t.nn.functional.interpolate(flat_masks, size=(256, 256), mode='bilinear', align_corners=False)
         # Flatten IoU predictions similarly: [B, point_batch, num_masks] -> [B, point_batch*num_masks]
-        if iou_predictions.ndim == 3:
-            iou_predictions = iou_predictions.reshape(iou_predictions.shape[0], -1)
+        iou_predictions = iou_predictions.reshape(iou_predictions.shape[0], -1)
         return flat_masks, iou_predictions
+
+class ImageEncoderTextEncoderConnector(t.nn.Module):
+    """
+    Projects vision features to LLM dimension for multimodal fusion. Adds optional dtype casting so inputs and weights match under mixed precision.
+    """
+    def __init__(
+            self,
+            device: str,
+            dtype: t.dtype,
+            image_encoder_dim: int,
+            hidden_dim: int,
+            text_encoder_dim: int,
+            num_layers: int,
+        ):
+        super(ImageEncoderTextEncoderConnector, self).__init__()
+        self.device = device
+        self.dtype = dtype
+        modules = []
+        if num_layers > 1:
+            for i in range(num_layers):
+                if i == 0:
+                    modules.append(t.nn.Linear(image_encoder_dim, hidden_dim, dtype=dtype, device=device))
+                else:
+                    modules.append(t.nn.Linear(hidden_dim, text_encoder_dim, dtype=dtype, device=device))
+                if i < num_layers - 1:
+                    modules.append(t.nn.GELU())
+        else:
+            modules = [t.nn.Linear(image_encoder_dim, text_encoder_dim, dtype=dtype, device=device)]
+        self.projector = t.nn.Sequential(*modules)
+
+    def forward(self, vision_features: t.Tensor) -> t.Tensor:
+        # vision_features = vision_features.to(device=self.device, dtype=self.dtype)
+        return self.projector(vision_features)
+
+class TextEncoderSAMConnector(t.nn.Module):
+    """
+    Extracts task-specific prompt embeddings from fused VLM features. Supports mixed precision by casting internal parameters to requested dtype.
+    """
+    def __init__(
+            self,
+            device: str,
+            dtype: t.dtype,
+            text_encoder_dim: int,
+            hidden_dim: int,
+            sam_dim: int,
+            num_prompt_tokens: int,
+        ):
+        super(TextEncoderSAMConnector, self).__init__()
+        self.device = device
+        self.dtype = dtype
+        self.prompt_queries = t.nn.Parameter(t.randn(1, num_prompt_tokens, text_encoder_dim, dtype=dtype, device=device) * 0.02)
+        self.cross_attn = t.nn.MultiheadAttention(text_encoder_dim, num_heads=8, batch_first=True, dtype=dtype, device=device)
+        self.norm = t.nn.LayerNorm(text_encoder_dim, dtype=dtype, device=device)
+        self.projector = t.nn.Sequential(
+            t.nn.Linear(text_encoder_dim, hidden_dim, dtype=dtype, device=device),
+            t.nn.GELU(),
+            t.nn.Linear(hidden_dim, sam_dim, dtype=dtype, device=device),
+        )
+
+    def forward(self, vlm_features: t.Tensor) -> t.Tensor:
+        # vlm_features = vlm_features.to(device=self.device, dtype=self.dtype)
+        batch_size = vlm_features.shape[0]
+        queries = self.prompt_queries.expand(batch_size, -1, -1)
+        prompts, _ = self.cross_attn(queries, vlm_features, vlm_features)
+        prompts = self.norm(prompts + queries)
+        prompt_embeddings = self.projector(prompts)
+        return prompt_embeddings
+
+class ImageEncoderSAMConnector(t.nn.Module):
+    """
+    Adapts the shared vision encoder features to SAM's expected format.
+    """
+    def __init__(
+            self,
+            device: str,
+            dtype: t.dtype,
+            image_encoder_dim: int,
+            sam_dim: int,
+            target_spatial_size: ty.Tuple[int, int],
+        ):
+        super(ImageEncoderSAMConnector, self).__init__()
+        self.device = device
+        self.dtype = dtype
+        self.target_spatial_size = target_spatial_size
+        # Choose a valid number of groups for GroupNorm: must divide sam_embed_dim.
+        max_groups = 32 if sam_dim >= 32 else sam_dim
+        groups = max_groups
+        while groups > 1 and sam_dim % groups != 0:
+            groups -= 1
+        self.projection = t.nn.Sequential(
+            t.nn.Conv2d(image_encoder_dim, sam_dim, kernel_size=1, dtype=dtype, device=device),
+            t.nn.GroupNorm(groups, sam_dim, dtype=dtype, device=device),
+            t.nn.Conv2d(sam_dim, sam_dim, kernel_size=3, padding=1, dtype=dtype, device=device),
+            t.nn.GroupNorm(groups, sam_dim, dtype=dtype, device=device),
+        )
+
+    def forward(self, vision_features: t.Tensor) -> t.Tensor:
+        """
+        Args:
+            vision_features: [B, input_dim, H, W]
+        Returns:
+            adapted_features: [B, sam_embed_dim, target_H, target_W]
+        """
+        # vision_features = vision_features.to(device=self.device, dtype=self.dtype)
+        features = self.projection(vision_features)
+        features = t.nn.functional.interpolate(features, size=self.target_spatial_size, mode='bilinear', align_corners=False)
+        return features
 
 class ModifiedLISA(t.nn.Module):
     """
@@ -396,127 +373,113 @@ class ModifiedLISA(t.nn.Module):
     """
     def __init__(
             self,
-            device: str = "cuda" if t.cuda.is_available() else "cpu",
-            vision_model_name: str = "openai/clip-vit-large-patch14",
-            vision_use_mixed_precision: bool = False,
-            vision_mixed_precision: str = "bf16",
-            vision_use_quantization: bool = False,
-            vision_quantization: str = "8bit",
-            vision_freeze: bool = False,
-            vision_use_lora: bool = False,
-            vision_lora_r: int = 8,
-            vision_lora_target_modules: list = [],
-            vision_lora_alpha: int = 16,
-            vision_lora_dropout: float = 0.1,
-            num_projection_layers: int = 2,
-            llm_model_name: str = "openai-community/gpt2",
-            llm_use_mixed_precision: bool = False,
-            llm_mixed_precision: str = 'bf16',
-            llm_use_quantization: bool = False,
-            llm_quantization: str = "8bit",
-            llm_freeze: bool = False,
-            llm_use_lora: bool = False,
-            llm_lora_r: int = 8,
-            llm_lora_alpha: int = 16,
-            llm_lora_dropout: float = 0.1,
-            llm_lora_target_modules: list = [],
-            sam_model_name: str = "facebook/sam-vit-base",
-            sam_use_mixed_precision: bool = False,
-            sam_mixed_precision: str = "bf16",
-            sam_use_quantization: bool = False,
-            sam_quantization: str = "8bit",
-            sam_freeze: bool = False,
-            sam_use_lora: bool = False,
-            sam_lora_r: int = 8,
-            sam_lora_alpha: int = 16,
-            sam_lora_target_modules: list = ["qkv", "proj"],
-            sam_lora_dropout: float = 0.1,
-            num_prompt_tokens: int = 8,
+            device: str,
+            image_encoder_model_name: str,
+            image_encoder_use_mixed_precision: bool,
+            image_encoder_mixed_precision: str,
+            image_encoder_use_quantization: bool,
+            image_encoder_quantization: str,
+            image_encoder_freeze: bool,
+            image_encoder_use_lora: bool,
+            image_encoder_lora_r: int,
+            image_encoder_lora_target_modules: list,
+            image_encoder_lora_alpha: int,
+            image_encoder_lora_dropout: float,
+            text_encoder_model_name: str,
+            text_encoder_use_mixed_precision: bool,
+            text_encoder_mixed_precision: str,
+            text_encoder_use_quantization: bool,
+            text_encoder_quantization: str,
+            text_encoder_freeze: bool,
+            text_encoder_use_lora: bool,
+            text_encoder_lora_r: int,
+            text_encoder_lora_alpha: int,
+            text_encoder_lora_dropout: float,
+            text_encoder_lora_target_modules: list,
+            sam_model_name: str,
+            sam_use_mixed_precision: bool,
+            sam_mixed_precision: str,
+            sam_use_quantization: bool,
+            sam_quantization: str,
+            sam_freeze: bool,
+            sam_use_lora: bool,
+            sam_lora_r: int,
+            sam_lora_alpha: int,
+            sam_lora_target_modules: list,
+            sam_lora_dropout: float,
+            image_text_connector_use_mixed_precision: str,
+            image_text_connector_mixed_precision: str,
+            image_text_connector_num_layers: int,
+            text_sam_connector_use_mixed_precision: bool,
+            text_sam_connector_mixed_precision: str,
+            text_sam_connector_tokens: int,
+            image_sam_connector_use_mixed_precision: bool,
+            image_sam_connector_mixed_precision: str,
         ):
         super(ModifiedLISA, self).__init__()
         self.device = device
-        self.vision_model_name = vision_model_name
-        # Determine a unified dtype based on first component requesting mixed precision
-        if vision_use_mixed_precision or llm_use_mixed_precision or sam_use_mixed_precision:
-            # Priority: vision -> llm -> sam (first True encountered)
-            if vision_use_mixed_precision:
-                active_precision = vision_mixed_precision
-            elif llm_use_mixed_precision:
-                active_precision = llm_mixed_precision
-            else:
-                active_precision = sam_mixed_precision
-            if active_precision == 'bf16':
-                self.dtype = t.bfloat16
-            elif active_precision == 'fp16':
-                self.dtype = t.float16
-            else:
-                self.dtype = t.float32
-        else:
-            self.dtype = t.float32
-        # 1. Shared Image Encoder (CLIP)
-        print("\n[1/5] Loading pretrained CLIP vision encoder...")
+        self.vision_model_name = image_encoder_model_name
+        self.llm_model_name = text_encoder_model_name
+
+        image_encoder_dtype = t.float32
+        if image_encoder_use_mixed_precision:
+            if image_encoder_mixed_precision == 'bf16':
+                image_encoder_dtype = t.bfloat16
+            elif image_encoder_mixed_precision == 'fp16':
+                image_encoder_dtype = t.float16
+        self.image_encoder_dtype = image_encoder_dtype
+        # Shared Image Encoder (CLIP)
         self.image_encoder = ImageEncoder(
             device=device,
-            model_name=vision_model_name,
-            use_mixed_precision=vision_use_mixed_precision,
-            mixed_precision=vision_mixed_precision,
-            use_quantization=vision_use_quantization,
-            quantization=vision_quantization,
-            freeze=vision_freeze,
-            use_lora=vision_use_lora,
-            lora_r=vision_lora_r,
-            lora_alpha=vision_lora_alpha,
-            lora_dropout=vision_lora_dropout,
-            lora_target_modules=vision_lora_target_modules,
+            dtype=image_encoder_dtype,
+            model_name=image_encoder_model_name,
+            use_quantization=image_encoder_use_quantization,
+            quantization=image_encoder_quantization,
+            freeze=image_encoder_freeze,
+            use_lora=image_encoder_use_lora,
+            lora_r=image_encoder_lora_r,
+            lora_alpha=image_encoder_lora_alpha,
+            lora_dropout=image_encoder_lora_dropout,
+            lora_target_modules=image_encoder_lora_target_modules,
         )
-        vision_dim = self.image_encoder.embed_dim
-        print(f"  ✓ CLIP loaded. Embedding dim: {vision_dim}")
-        # 2. Text Encoder (LLM)
-        print("\n[2/5] Loading pretrained LLM...")
-        self.text_encoder = LLMTextEncoder(
+        image_encoder_dim = self.image_encoder.embed_dim
+        print(f"  ✓ CLIP loaded. Embedding dim: {image_encoder_dim}")
+
+        # Text Encoder (LLM)
+        text_encoder_dtype = t.float32
+        if text_encoder_use_mixed_precision:
+            if text_encoder_mixed_precision == 'bf16':
+                text_encoder_dtype = t.bfloat16
+            elif text_encoder_mixed_precision == 'fp16':
+                text_encoder_dtype = t.float16
+        self.text_encoder_dtype = text_encoder_dtype
+        self.text_encoder = TextEncoder(
             device=device,
-            model_name=llm_model_name,
-            use_mixed_precision=llm_use_mixed_precision,
-            mixed_precision=llm_mixed_precision,
-            use_quantization=llm_use_quantization,
-            quantization=llm_quantization,
-            freeze=llm_freeze,
-            use_lora=llm_use_lora,
-            lora_r=llm_lora_r,
-            lora_alpha=llm_lora_alpha,
-            lora_dropout=llm_lora_dropout,
-            lora_target_modules=llm_lora_target_modules,
+            dtype=text_encoder_dtype,
+            model_name=text_encoder_model_name,
+            use_quantization=text_encoder_use_quantization,
+            quantization=text_encoder_quantization,
+            freeze=text_encoder_freeze,
+            use_lora=text_encoder_use_lora,
+            lora_r=text_encoder_lora_r,
+            lora_alpha=text_encoder_lora_alpha,
+            lora_dropout=text_encoder_lora_dropout,
+            lora_target_modules=text_encoder_lora_target_modules,
         )
-        llm_dim = self.text_encoder.embed_dim
-        print(f"  ✓ LLM loaded. Embedding dim: {llm_dim}")
-        # 3. Vision-Language Projector
-        print("\n[3/5] Creating vision-language projector...")
-        self.vision_projector = Projector(
-            device=device,
-            vision_dim=vision_dim,
-            hidden_dim=2 * vision_dim,
-            llm_dim=llm_dim,
-            num_projection_layers=num_projection_layers,
-            dtype=self.dtype,
-        )
-        print("  ✓ Projector created")
-        # 4. Prompt Extractor
-        print("\n[4/5] Creating prompt extractor...")
-        self.prompt_extractor = PromptExtractor(
-            input_dim=llm_dim,
-            hidden_dim=llm_dim // 2,
-            output_dim=256,
-            num_prompt_tokens=num_prompt_tokens,
-            dtype=self.dtype,
-        ).to(device)
-        print("  ✓ Prompt extractor created")
-        # 5. SAM Components
-        print("\n[5/5] Loading pretrained SAM...")
+        text_encoder_dim = self.text_encoder.embed_dim
+        print(f"  ✓ LLM loaded. Embedding dim: {text_encoder_dim}")
+
+        # SAM
+        sam_dtype = t.float32
+        if sam_use_mixed_precision:
+            if sam_mixed_precision == 'bf16':
+                sam_dtype = t.bfloat16
+            elif sam_mixed_precision == 'fp16':
+                sam_dtype = t.float16
         self.sam_decoder = SegmentAnythingModel(
             device=device,
+            dtype=sam_dtype,
             sam_model_name=sam_model_name,
-            use_mixed_precision=sam_use_mixed_precision,
-            mixed_precision=sam_mixed_precision,
             use_quantization=sam_use_quantization,
             quantization=sam_quantization,
             freeze=sam_freeze,
@@ -526,33 +489,56 @@ class ModifiedLISA(t.nn.Module):
             lora_dropout=sam_lora_dropout,
             lora_target_modules=sam_lora_target_modules,
         )
-        sam_embed_dim = self.sam_decoder.sam_embed_dim
-        self.vision_to_sam_adapter = VisionToSAMAdapter(input_dim=vision_dim, sam_embed_dim=sam_embed_dim, target_spatial_size=(64, 64)).to(device)
-        if (vision_use_mixed_precision or llm_use_mixed_precision or sam_use_mixed_precision) and self.dtype != t.float32:
-            self.vision_to_sam_adapter = self.vision_to_sam_adapter.to(self.dtype)
+        sam_dim = self.sam_decoder.sam_embed_dim
+        print(f"  ✓ SAM created. Embedding dim: {sam_dim}")
+
+        # Projector
+        image_text_connector_dtype = t.float32
+        if image_text_connector_use_mixed_precision:
+            if image_text_connector_mixed_precision == 'bf16':
+                image_text_connector_dtype = t.bfloat16
+            elif image_text_connector_mixed_precision == 'fp16':
+                image_text_connector_dtype = t.float16
+        self.image_text_connector = ImageEncoderTextEncoderConnector(
+            device=device,
+            dtype=image_text_connector_dtype,
+            image_encoder_dim=image_encoder_dim,
+            hidden_dim=(image_encoder_dim + text_encoder_dim) // 2,
+            text_encoder_dim=text_encoder_dim,
+            num_layers=image_text_connector_num_layers,
+        )
+        print("  ✓ Projector created")
+
+        text_sam_connector_dtype = t.float32
+        if text_sam_connector_use_mixed_precision:
+            if text_sam_connector_mixed_precision == 'bf16':
+                text_sam_connector_dtype = t.bfloat16
+            elif text_sam_connector_mixed_precision == 'fp16':
+                text_sam_connector_dtype = t.float16
+        self.text_sam_connector = TextEncoderSAMConnector(
+            device=device,
+            dtype=text_sam_connector_dtype,
+            text_encoder_dim=text_encoder_dim,
+            hidden_dim=text_encoder_dim // 2,
+            sam_dim=sam_dim,
+            num_prompt_tokens=text_sam_connector_tokens,
+        )
+        print("  ✓ Prompt extractor created")
+
+        image_sam_connector_dtype = t.float32
+        if image_sam_connector_use_mixed_precision:
+            if image_sam_connector_mixed_precision == 'bf16':
+                image_sam_connector_dtype = t.bfloat16
+            elif image_sam_connector_mixed_precision == 'fp16':
+                image_sam_connector_dtype = t.float16
+        self.image_sam_connector = ImageEncoderSAMConnector(
+            device=device,
+            dtype=image_sam_connector_dtype,
+            image_encoder_dim=image_encoder_dim,
+            sam_dim=sam_dim,
+            target_spatial_size=(64, 64),
+        )
         print("  ✓ SAM adapter created")
-        print("\n" + "="*70)
-        print("✓ All Components Initialized Successfully!")
-        print("="*70)
-        print(f"\nConfiguration Summary:")
-        print(f"  • Vision Encoder: {vision_model_name}")
-        print(f"    - Mode: {'Frozen' if vision_freeze else 'LoRA' if vision_use_lora else 'Full Training'}")
-        print(f"  • Text Encoder: {llm_model_name}")
-        print(f"    - Mode: {'Frozen' if llm_freeze else 'LoRA' if llm_use_lora else 'Full Training'}")
-        print(f"    - Quantization: {llm_quantization or 'None'}")
-        print(f"  • Mask Decoder: {sam_model_name}")
-        if sam_freeze:
-            sam_mode_str = 'Frozen'
-        elif sam_use_lora:
-            sam_mode_str = 'LoRA (feature-extraction, experimental)'
-        else:
-            sam_mode_str = 'Full Training'
-        print(f"    - Mode: {sam_mode_str}")
-        if sam_use_lora:
-            print("    - Note: SAM LoRA uses FEATURE_EXTRACTION task type; generation hooks are absent.")
-        print(f"  • Precision: {self.dtype}")
-        print(f"  • Image Encoding: ONCE (shared between VLM and SAM)")
-        print("="*70 + "\n")
 
     def forward(self, pixel_values: t.Tensor, input_ids: t.Tensor, attention_mask: ty.Optional[t.Tensor] = None, multimask_output: bool = True) -> ty.Tuple[t.Tensor, t.Tensor]:
         """
@@ -567,38 +553,35 @@ class ModifiedLISA(t.nn.Module):
         """
         # Step 1: Encode image ONCE
         vision_features_seq, vision_features_spatial = self.image_encoder(pixel_values)
-        if self.dtype != t.float32:
-            vision_features_seq = vision_features_seq.to(self.dtype)
-            vision_features_spatial = vision_features_spatial.to(self.dtype)
-        
+
         # Step 2: Process text with LLM
         text_features = self.text_encoder(input_ids, attention_mask)
-        if self.dtype != t.float32:
-            text_features = text_features.to(self.dtype)
-        
+        # if self.dtype != t.float32:
+        #     text_features = text_features.to(self.dtype)
+
         # Step 3: Project vision features to LLM space
-        vision_features_projected = self.vision_projector(vision_features_seq)
-        if self.dtype != t.float32 and vision_features_projected.dtype != self.dtype:
-            vision_features_projected = vision_features_projected.to(self.dtype)
-        
+        vision_features_projected = self.image_text_connector(vision_features_seq)
+        # if self.dtype != t.float32 and vision_features_projected.dtype != self.dtype:
+        #     vision_features_projected = vision_features_projected.to(self.dtype)
+
         # Step 4: Fuse vision and language
         fused_features = t.cat([vision_features_projected, text_features], dim=1)
-        if fused_features.dtype != self.dtype and self.dtype != t.float32:
-            fused_features = fused_features.to(self.dtype)
-        
+        # if fused_features.dtype != self.dtype and self.dtype != t.float32:
+        #     fused_features = fused_features.to(self.dtype)
+
         # Step 5: Extract prompt embeddings
-        prompt_embeddings = self.prompt_extractor(fused_features)
-        if self.dtype != t.float32 and prompt_embeddings.dtype != self.dtype:
-            prompt_embeddings = prompt_embeddings.to(self.dtype)
-        
+        prompt_embeddings = self.text_sam_connector(fused_features)
+        # if self.dtype != t.float32 and prompt_embeddings.dtype != self.dtype:
+        #     prompt_embeddings = prompt_embeddings.to(self.dtype)
+
         # Step 6a: Adapt vision features to SAM's format
-        sam_image_embeddings = self.vision_to_sam_adapter(vision_features_spatial)
-        if self.dtype != t.float32 and sam_image_embeddings.dtype != self.dtype:
-            sam_image_embeddings = sam_image_embeddings.to(self.dtype)
-        
+        sam_image_embeddings = self.image_sam_connector(vision_features_spatial)
+        # if self.dtype != t.float32 and sam_image_embeddings.dtype != self.dtype:
+        #     sam_image_embeddings = sam_image_embeddings.to(self.dtype)
+
         # Step 6b: Decode masks using pretrained SAM
         masks, iou_predictions = self.sam_decoder(sam_image_embeddings, prompt_embeddings, multimask_output=multimask_output)
-        
+
         return masks, iou_predictions
 
     def prepare_inputs(self, images: list, prompts: list):
@@ -615,12 +598,8 @@ class ModifiedLISA(t.nn.Module):
         pixel_values = processor(images=images, return_tensors="pt")["pixel_values"]
         tokenizer = self.text_encoder.tokenizer
         text_inputs = tokenizer(prompts, padding=True, truncation=True, return_tensors="pt")
-        return (
-            pixel_values.to(self.device), 
-            text_inputs["input_ids"].to(self.device), 
-            text_inputs["attention_mask"].to(self.device)
-        )
-    
+        return pixel_values.to(self.device), text_inputs["input_ids"].to(self.device), text_inputs["attention_mask"].to(self.device)
+
     def print_trainable_parameters(self):
         """Print the number of trainable parameters in the model"""
         trainable_params = 0
@@ -636,134 +615,100 @@ if __name__ == "__main__":
     vocabulary_size = 32000
     max_length = 50
     img_h, img_w = 224, 224
-    
-    print("\n" + "="*70)
-    print("Modified LISA: Single Image Encoding with Pretrained Models")
-    print("="*70)
-    
     device = "cuda" if t.cuda.is_available() else "cpu"
+    lora_r = 16
+    lora_alpha = 32
+    lora_dropout = 0.1
+    image_encoder_model_name = 'openai/clip-vit-base-patch16'
+    image_encoder_use_mixed_precision = False
+    image_encoder_mixed_precision = "bf16"
+    image_encoder_use_quantization = False
+    image_encoder_quantization = "8bit"
+    image_encoder_freeze = False
+    image_encoder_use_lora = True
+    image_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
+    text_encoder_model_name = 'openai-community/gpt2'
+    text_encoder_use_mixed_precision = False
+    text_encoder_mixed_precision = "bf16"
+    text_encoder_use_quantization = False
+    text_encoder_quantization = "8bit"
+    text_encoder_freeze = False
+    text_encoder_use_lora = True
+    text_encoder_lora_target_modules = ['c_proj', 'c_attn']
+    sam_model_name = 'facebook/sam-vit-base'
+    sam_use_mixed_precision = False
+    sam_mixed_precision = "bf16"
+    sam_use_quantization = False
+    sam_quantization = "8bit"
+    sam_freeze = False
+    sam_use_lora = True
+    sam_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
+    image_text_connector_use_mixed_precision=False
+    image_text_connector_mixed_precision="bf16"
+    image_text_connector_num_layers=2
+    text_sam_connector_use_mixed_precision=False
+    text_sam_connector_mixed_precision="bf16"
+    text_sam_connector_tokens=8
+    image_sam_connector_use_mixed_precision=False
+    image_sam_connector_mixed_precision="bf16"
     print(f"\nUsing device: {device}")
-    
-    # Example 1: Full training with mixed precision
-    print("\n" + "="*70)
-    print("Example 1: Full Training with BF16 Mixed Precision")
-    print("="*70)
-    model1 = ModifiedLISA(
-        device=device,
-        vision_model_name='openai/clip-vit-large-patch14',
-        vision_use_mixed_precision=True,
-        vision_mixed_precision="bf16",
-        vision_use_quantization=False,
-        vision_use_lora=False,
-        vision_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
-        llm_model_name='openai-community/gpt2',
-        llm_use_mixed_precision=True,
-        llm_mixed_precision="bf16",
-        llm_use_quantization=False,
-        llm_use_lora=False,
-        llm_lora_target_modules=['c_proj', 'c_attn'],
-        sam_model_name='facebook/sam-vit-base',
-        sam_use_mixed_precision=True,
-        sam_mixed_precision="bf16",
-        sam_use_quantization=False,
-        sam_use_lora=False,
-        sam_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
-    )
-    model1.print_trainable_parameters()
 
-    # Example 2: LoRA fine-tuning with 4-bit quantization
-    print("\n" + "="*70)
-    print("Example 2: LoRA Fine-tuning with 4-bit Quantization")
-    print("="*70)
-    model2 = ModifiedLISA(
+    model = ModifiedLISA(
         device=device,
-        vision_model_name='openai/clip-vit-large-patch14',
-        vision_use_mixed_precision=True,
-        vision_mixed_precision="bf16",
-        vision_use_quantization=False,
-        vision_use_lora=True,
-        vision_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
-        llm_model_name='openai-community/gpt2',
-        llm_use_mixed_precision=True,
-        llm_mixed_precision="bf16",
-        llm_use_quantization=False,
-        llm_use_lora=True,
-        llm_lora_target_modules=['c_proj', 'c_attn'],
-        sam_model_name='facebook/sam-vit-base',
-        sam_use_mixed_precision=True,
-        sam_mixed_precision="bf16",
-        sam_use_quantization=False,
-        sam_use_lora=True,
-        sam_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
+        image_encoder_model_name=image_encoder_model_name,
+        image_encoder_use_mixed_precision=image_encoder_use_mixed_precision,
+        image_encoder_mixed_precision=image_encoder_mixed_precision,
+        image_encoder_use_quantization=image_encoder_use_quantization,
+        image_encoder_quantization=image_encoder_quantization,
+        image_encoder_freeze=image_encoder_freeze,
+        image_encoder_use_lora=image_encoder_use_lora,
+        image_encoder_lora_r=lora_r,
+        image_encoder_lora_target_modules=image_encoder_lora_target_modules,
+        image_encoder_lora_alpha=lora_alpha,
+        image_encoder_lora_dropout=lora_dropout,
+        text_encoder_model_name=text_encoder_model_name,
+        text_encoder_use_mixed_precision=text_encoder_use_mixed_precision,
+        text_encoder_mixed_precision=text_encoder_mixed_precision,
+        text_encoder_use_quantization=text_encoder_use_quantization,
+        text_encoder_quantization=text_encoder_quantization,
+        text_encoder_freeze=text_encoder_freeze,
+        text_encoder_use_lora=text_encoder_use_lora,
+        text_encoder_lora_r=lora_r,
+        text_encoder_lora_alpha=lora_alpha,
+        text_encoder_lora_dropout=lora_dropout,
+        text_encoder_lora_target_modules=text_encoder_lora_target_modules,
+        sam_model_name=sam_model_name,
+        sam_use_mixed_precision=sam_use_mixed_precision,
+        sam_mixed_precision=sam_mixed_precision,
+        sam_use_quantization=sam_use_quantization,
+        sam_quantization=sam_quantization,
+        sam_freeze=sam_freeze,
+        sam_use_lora=sam_use_lora,
+        sam_lora_r=lora_r,
+        sam_lora_alpha=lora_alpha,
+        sam_lora_target_modules=sam_lora_target_modules,
+        sam_lora_dropout=lora_dropout,
+        image_text_connector_use_mixed_precision=image_text_connector_use_mixed_precision,
+        image_text_connector_mixed_precision=image_text_connector_mixed_precision,
+        image_text_connector_num_layers=image_text_connector_num_layers,
+        text_sam_connector_use_mixed_precision=text_sam_connector_use_mixed_precision,
+        text_sam_connector_mixed_precision=text_sam_connector_mixed_precision,
+        text_sam_connector_tokens=text_sam_connector_tokens,
+        image_sam_connector_use_mixed_precision=image_sam_connector_use_mixed_precision,
+        image_sam_connector_mixed_precision=image_sam_connector_mixed_precision,
     )
-    model2.print_trainable_parameters()
+    model.print_trainable_parameters()
 
-    # Example 3: Freeze all pretrained models
-    print("\n" + "="*70)
-    print("Example 3: All Pretrained Models Frozen (Train only adapters)")
-    print("="*70)
-    model3 = ModifiedLISA(
-        device=device,
-        vision_model_name='openai/clip-vit-large-patch14',
-        vision_use_mixed_precision=True,
-        vision_mixed_precision="bf16",
-        vision_use_quantization=False,
-        vision_freeze=True,
-        vision_use_lora=False,
-        vision_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
-        llm_model_name='openai-community/gpt2',
-        llm_use_mixed_precision=True,
-        llm_mixed_precision="bf16",
-        llm_use_quantization=False,
-        llm_freeze=True,
-        llm_use_lora=False,
-        llm_lora_target_modules=['c_proj', 'c_attn'],
-        sam_model_name='facebook/sam-vit-base',
-        sam_use_mixed_precision=True,
-        sam_mixed_precision="bf16",
-        sam_use_quantization=False,
-        sam_freeze=True,
-        sam_use_lora=False,
-        sam_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
-    )
-    model3.print_trainable_parameters()
-    
-    # Test forward pass with model3
-    print("\n" + "="*70)
-    print("Testing forward pass with frozen model...")
-    print("="*70)
-    
     batch_size = 2
-    pixel_values = t.randn(batch_size, 3, img_h, img_w).to(device)
-    input_ids = t.randint(0, vocabulary_size, (batch_size, max_length)).to(device)
-    attention_mask = t.ones(batch_size, max_length).to(device)
-    
-    print(f"\nInput shapes:")
-    print(f"  • Images: {pixel_values.shape}")
-    print(f"  • Text tokens: {input_ids.shape}")
-    print(f"  • Attention mask: {attention_mask.shape}")
+    pixel_values = t.randn(batch_size, 3, img_h, img_w, dtype=t.float32).to(device)
+    input_ids = t.randint(0, vocabulary_size, (batch_size, max_length), dtype=t.int32).to(device)
+    attention_mask = t.ones(batch_size, max_length, dtype=t.int32).to(device)
+
+    # print(f"\nInput shapes:")
+    # print(f"  • Images: {pixel_values.shape}")
+    # print(f"  • Text tokens: {input_ids.shape}")
+    # print(f"  • Attention mask: {attention_mask.shape}")
 
     print("\nRunning forward pass...")
     with t.no_grad():
-        masks, iou_predictions = model3(pixel_values, input_ids, attention_mask, multimask_output=True)
-    
-    print("\n" + "="*70)
-    print("Results:")
-    print("="*70)
-    print(f"Output masks shape: {masks.shape}")
-    print(f"Output IoU predictions shape: {iou_predictions.shape}")
-    print(f"Mask resolution: {masks.shape[-2]}x{masks.shape[-1]}")
-    print(f"Number of masks per image: {masks.shape[1]}")
-    
-    print("\n" + "="*70)
-    print("Key Features Verified:")
-    print("="*70)
-    print("✓ Image encoded ONLY ONCE using pretrained CLIP")
-    print("✓ Text processed by pretrained LLaMA")
-    print("✓ Masks generated by pretrained SAM decoder")
-    print("✓ Configurable quantization (4-bit, 8-bit)")
-    print("✓ Mixed precision support (bf16, fp16, fp32)")
-    print("✓ Flexible training modes (freeze, LoRA, full)")
-    print("✓ Shared embeddings used for VLM and SAM")
-    print("✓ Zero redundant image encoding!")
-    print("="*70 + "\n")
+        masks, iou_predictions = model(pixel_values, input_ids, attention_mask, multimask_output=True)
