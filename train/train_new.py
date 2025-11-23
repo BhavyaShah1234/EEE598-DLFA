@@ -25,23 +25,29 @@ class ImageEncoder(t.nn.Module):
         # Determine dtype based on mixed precision settings
         self.device = device
         self.dtype = dtype
-        # Prepare quantization config if needed
+        # 1. (Quantization OR torch dtype) → 2. LoRA / Freeze
+        quantization_config = None
         if use_quantization:
             if quantization == "4bit":
-                quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype}")
+                quantization_config = tf.BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                print(f"  → Vision quantization: 4-bit (compute={dtype})")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
-                print(f"  → Using 8-bit quantization")
+                print("  → Vision quantization: 8-bit")
             else:
-                quantization_config = None
-        else:
-            quantization_config = None
-        # Load pretrained CLIP vision encoder
+                print(f"  ! Unknown vision quantization '{quantization}' ignored")
+        load_kwargs = {"device_map": "auto"}
         if quantization_config is not None:
-            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
+            load_kwargs["quantization_config"] = quantization_config
         else:
-            self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, device_map="auto", dtype=dtype)
+            # Only set dtype when NOT quantized
+            load_kwargs["dtype"] = dtype
+        self.vision_model = tf.CLIPVisionModel.from_pretrained(model_name, **load_kwargs)
         # self.vision_model = self.vision_model.to(device)
         self.config = self.vision_model.config
         self.embed_dim = self.config.hidden_size
@@ -49,17 +55,17 @@ class ImageEncoder(t.nn.Module):
         self.image_size = self.config.image_size
         # Apply freeze or LoRA
         if freeze:
-            print("  → Freezing vision encoder")
+            print("  → Vision mode: Frozen")
             self.vision_model.requires_grad_(False)
         elif use_lora:
-            print(f"  → Applying LoRA to vision encoder (r={lora_r}, alpha={lora_alpha})")
+            print(f"  → Vision mode: LoRA (r={lora_r}, alpha={lora_alpha})")
+            # Omit task_type to avoid PEFT mislabeling inputs for vision backbone
             lora_config = p.LoraConfig(
-                # task_type=p.TaskType.FEATURE_EXTRACTION,
                 r=lora_r,
                 lora_alpha=lora_alpha,
                 target_modules=lora_target_modules,
                 lora_dropout=lora_dropout,
-                bias="none"
+                bias="none",
             )
             self.vision_model = p.get_peft_model(self.vision_model, lora_config)
             self.vision_model.print_trainable_parameters()
@@ -102,40 +108,44 @@ class TextEncoder(t.nn.Module):
         super(TextEncoder, self).__init__()
         self.device = device
         self.dtype = dtype
-        # Prepare quantization config
+        quantization_config = None
         if use_quantization:
             if quantization == "4bit":
-                quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype}")
+                quantization_config = tf.BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                print(f"  → LLM quantization: 4-bit (compute={dtype})")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
-                print(f"  → Using 8-bit quantization")
+                print("  → LLM quantization: 8-bit")
             else:
-                quantization_config = None
-        else:
-            quantization_config = None
-        # Load pretrained LLM
+                print(f"  ! Unknown LLM quantization '{quantization}' ignored")
+        load_kwargs = {"device_map": "auto"}
         if quantization_config is not None:
-            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
+            load_kwargs["quantization_config"] = quantization_config
         else:
-            self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", dtype=dtype)
+            load_kwargs["dtype"] = dtype
+        self.llm = tf.AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
         self.tokenizer = tf.AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.embed_dim = self.llm.config.hidden_size
         # Apply freeze or LoRA
         if freeze:
-            print("  → Freezing LLM")
+            print("  → LLM mode: Frozen")
             self.llm.requires_grad_(False)
         elif use_lora:
-            print(f"  → Applying LoRA to LLM (r={lora_r}, alpha={lora_alpha})")
+            print(f"  → LLM mode: LoRA (r={lora_r}, alpha={lora_alpha})")
             lora_config = p.LoraConfig(
                 r=lora_r,
                 lora_alpha=lora_alpha,
                 target_modules=lora_target_modules,
                 lora_dropout=lora_dropout,
                 bias="none",
-                task_type=p.TaskType.CAUSAL_LM
+                task_type=p.TaskType.CAUSAL_LM,
             )
             self.llm = p.get_peft_model(self.llm, lora_config)
             self.llm.print_trainable_parameters()
@@ -177,36 +187,41 @@ class SegmentAnythingModel(t.nn.Module):
         super(SegmentAnythingModel, self).__init__()
         self.device = device
         self.dtype = dtype
+        quantization_config = None
         if use_quantization:
             if quantization == "4bit":
-                quantization_config = tf.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4")
-                print(f"  → Using 4-bit quantization with dtype={dtype}")
+                quantization_config = tf.BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                print(f"  → SAM quantization: 4-bit (compute={dtype})")
             elif quantization == "8bit":
                 quantization_config = tf.BitsAndBytesConfig(load_in_8bit=True)
-                print(f"  → Using 8-bit quantization")
+                print("  → SAM quantization: 8-bit")
             else:
-                quantization_config = None
-        else:
-            quantization_config = None
+                print(f"  ! Unknown SAM quantization '{quantization}' ignored")
         print(f"  → Loading pretrained SAM: {sam_model_name}")
+        load_kwargs = {"device_map": "auto"}
         if quantization_config is not None:
-            self.sam = tf.SamModel.from_pretrained(sam_model_name, quantization_config=quantization_config, device_map="auto", dtype=dtype)
+            load_kwargs["quantization_config"] = quantization_config
         else:
-            self.sam = tf.SamModel.from_pretrained(sam_model_name, device_map="auto", dtype=dtype)
+            load_kwargs["dtype"] = dtype
+        self.sam = tf.SamModel.from_pretrained(sam_model_name, **load_kwargs)
         # Apply freeze or LoRA
         if freeze:
-            print("  → Freezing SAM")
+            print("  → SAM mode: Frozen")
             self.sam.requires_grad_(False)
         elif use_lora:
-            print(f"  → Applying LoRA to SAM (r={lora_r}, alpha={lora_alpha})")
-            # SamModel is not a causal LM; use FEATURE_EXTRACTION task type to avoid generation-specific hooks.
+            print(f"  → SAM mode: LoRA (r={lora_r}, alpha={lora_alpha})")
+            # Omit task_type for SAM to prevent incorrect input mapping
             lora_config = p.LoraConfig(
                 r=lora_r,
                 lora_alpha=lora_alpha,
                 target_modules=lora_target_modules,
                 lora_dropout=lora_dropout,
                 bias="none",
-                task_type=p.TaskType.FEATURE_EXTRACTION,
             )
             self.sam = p.get_peft_model(self.sam, lora_config)
             self.sam.print_trainable_parameters()
@@ -227,16 +242,14 @@ class SegmentAnythingModel(t.nn.Module):
             masks: [B, num_masks, 256, 256]
             iou_predictions: [B, num_masks]
         """
+        # target_dtype = self.param_dtype
+        # target_device = self.runtime_device
+        image_embeddings = image_embeddings.to(device=self.device, dtype=self.dtype)
+        prompt_embeddings = prompt_embeddings.to(device=self.device, dtype=self.dtype)
         batch_size = image_embeddings.shape[0]
-        dense_embeddings = self.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(batch_size, -1, image_embeddings.shape[-2], image_embeddings.shape[-1])
-        # Obtain wide image positional embeddings from SamModel helper (tied with prompt positional embeddings)
-        image_positional_embeddings = self.sam.get_image_wide_positional_embeddings()#.to(image_embeddings.device)
-        image_positional_embeddings = image_positional_embeddings.repeat(batch_size, 1, 1, 1)
-        # if image_positional_embeddings.dtype != image_embeddings.dtype:
-        #     image_positional_embeddings = image_positional_embeddings.to(image_embeddings.dtype)
-        # Reshape our custom prompt embeddings to match expected sparse prompt shape: (B, point_batch_size, num_points, hidden)
-        # Treat each prompt token as a single point with one coordinate embedding slot.
-        sparse_prompt_embeddings = prompt_embeddings.unsqueeze(2)
+        dense_embeddings = self.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(batch_size, -1, image_embeddings.shape[-2], image_embeddings.shape[-1]).to(device=self.device, dtype=self.dtype)
+        image_positional_embeddings = self.sam.get_image_wide_positional_embeddings().repeat(batch_size, 1, 1, 1).to(device=self.device, dtype=self.dtype)
+        sparse_prompt_embeddings = prompt_embeddings.unsqueeze(2).to(device=self.device, dtype=self.dtype)
         low_res_masks, iou_predictions = self.mask_decoder(
             image_embeddings=image_embeddings,
             image_positional_embeddings=image_positional_embeddings,
@@ -244,7 +257,6 @@ class SegmentAnythingModel(t.nn.Module):
             dense_prompt_embeddings=dense_embeddings,
             multimask_output=multimask_output,
         )
-        print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx:', low_res_masks.shape, iou_predictions.shape)
         # SAM returns masks shape: [B, point_batch, num_masks, H, W]
         batch_size, P, M, height, width = low_res_masks.shape
         # Flatten point and mask dimensions for downstream simplicity
@@ -284,7 +296,7 @@ class ImageEncoderTextEncoderConnector(t.nn.Module):
         self.projector = t.nn.Sequential(*modules)
 
     def forward(self, vision_features: t.Tensor) -> t.Tensor:
-        # vision_features = vision_features.to(device=self.device, dtype=self.dtype)
+        vision_features = vision_features.to(device=self.device, dtype=self.dtype)
         return self.projector(vision_features)
 
 class TextEncoderSAMConnector(t.nn.Module):
@@ -356,7 +368,7 @@ class ImageEncoderSAMConnector(t.nn.Module):
         Returns:
             adapted_features: [B, sam_embed_dim, target_H, target_W]
         """
-        # vision_features = vision_features.to(device=self.device, dtype=self.dtype)
+        vision_features = vision_features.to(device=self.device, dtype=self.dtype)
         features = self.projection(vision_features)
         features = t.nn.functional.interpolate(features, size=self.target_spatial_size, mode='bilinear', align_corners=False)
         return features
@@ -620,24 +632,24 @@ if __name__ == "__main__":
     lora_alpha = 32
     lora_dropout = 0.1
     image_encoder_model_name = 'openai/clip-vit-base-patch16'
-    image_encoder_use_mixed_precision = False
-    image_encoder_mixed_precision = "bf16"
+    image_encoder_use_mixed_precision = True
+    image_encoder_mixed_precision = "fp16"
     image_encoder_use_quantization = False
     image_encoder_quantization = "8bit"
     image_encoder_freeze = False
     image_encoder_use_lora = True
     image_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
-    text_encoder_model_name = 'openai-community/gpt2'
-    text_encoder_use_mixed_precision = False
-    text_encoder_mixed_precision = "bf16"
+    text_encoder_model_name = 'meta-llama/Llama-3.2-1B' # 'openai-community/gpt2'
+    text_encoder_use_mixed_precision = True
+    text_encoder_mixed_precision = "fp16"
     text_encoder_use_quantization = False
     text_encoder_quantization = "8bit"
     text_encoder_freeze = False
     text_encoder_use_lora = True
-    text_encoder_lora_target_modules = ['c_proj', 'c_attn']
+    text_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj'] # ['c_proj', 'c_attn']
     sam_model_name = 'facebook/sam-vit-base'
-    sam_use_mixed_precision = False
-    sam_mixed_precision = "bf16"
+    sam_use_mixed_precision = True
+    sam_mixed_precision = "fp16"
     sam_use_quantization = False
     sam_quantization = "8bit"
     sam_freeze = False
@@ -703,11 +715,6 @@ if __name__ == "__main__":
     pixel_values = t.randn(batch_size, 3, img_h, img_w, dtype=t.float32).to(device)
     input_ids = t.randint(0, vocabulary_size, (batch_size, max_length), dtype=t.int32).to(device)
     attention_mask = t.ones(batch_size, max_length, dtype=t.int32).to(device)
-
-    # print(f"\nInput shapes:")
-    # print(f"  • Images: {pixel_values.shape}")
-    # print(f"  • Text tokens: {input_ids.shape}")
-    # print(f"  • Attention mask: {attention_mask.shape}")
 
     print("\nRunning forward pass...")
     with t.no_grad():
