@@ -637,7 +637,7 @@ if __name__ == "__main__":
     image_encoder_use_quantization = False
     image_encoder_quantization = "8bit"
     image_encoder_freeze = False
-    image_encoder_use_lora = True
+    image_encoder_use_lora = False
     image_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
     text_encoder_model_name = 'meta-llama/Llama-3.2-1B' # 'openai-community/gpt2'
     text_encoder_use_mixed_precision = True
@@ -645,7 +645,7 @@ if __name__ == "__main__":
     text_encoder_use_quantization = False
     text_encoder_quantization = "8bit"
     text_encoder_freeze = False
-    text_encoder_use_lora = True
+    text_encoder_use_lora = False
     text_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj'] # ['c_proj', 'c_attn']
     sam_model_name = 'facebook/sam-vit-base'
     sam_use_mixed_precision = True
@@ -653,7 +653,7 @@ if __name__ == "__main__":
     sam_use_quantization = False
     sam_quantization = "8bit"
     sam_freeze = False
-    sam_use_lora = True
+    sam_use_lora = False
     sam_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
     image_text_connector_use_mixed_precision=False
     image_text_connector_mixed_precision="bf16"

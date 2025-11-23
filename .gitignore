@@ -208,5 +208,15 @@ __marimo__/
 
 *.zip
 *.json
-*.jpg
-*.png
+train/*.jpg
+train/*.png
+train/*.jpeg
+train/*.json
+val/*.jpg
+val/*.png
+val/*.jpeg
+val/*.json
+test/*.jpg
+test/*.png
+test/*.jpeg
+test/*.json
