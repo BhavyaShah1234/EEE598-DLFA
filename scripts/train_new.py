@@ -322,10 +322,10 @@ class TextEncoderSAMConnector(t.nn.Module):
             t.nn.Linear(text_encoder_dim, hidden_dim, dtype=dtype, device=device),
             t.nn.GELU(),
             t.nn.Linear(hidden_dim, sam_dim, dtype=dtype, device=device),
-        )
+        )#.to(device=device, dtype=dtype)
 
     def forward(self, vlm_features: t.Tensor) -> t.Tensor:
-        # vlm_features = vlm_features.to(device=self.device, dtype=self.dtype)
+        vlm_features = vlm_features.to(device=self.device, dtype=self.dtype)
         batch_size = vlm_features.shape[0]
         queries = self.prompt_queries.expand(batch_size, -1, -1)
         prompts, _ = self.cross_attn(queries, vlm_features, vlm_features)
@@ -637,7 +637,7 @@ if __name__ == "__main__":
     image_encoder_use_quantization = False
     image_encoder_quantization = "8bit"
     image_encoder_freeze = False
-    image_encoder_use_lora = False
+    image_encoder_use_lora = True
     image_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
     text_encoder_model_name = 'meta-llama/Llama-3.2-1B' # 'openai-community/gpt2'
     text_encoder_use_mixed_precision = True
@@ -645,7 +645,7 @@ if __name__ == "__main__":
     text_encoder_use_quantization = False
     text_encoder_quantization = "8bit"
     text_encoder_freeze = False
-    text_encoder_use_lora = False
+    text_encoder_use_lora = True
     text_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj'] # ['c_proj', 'c_attn']
     sam_model_name = 'facebook/sam-vit-base'
     sam_use_mixed_precision = True
@@ -653,15 +653,15 @@ if __name__ == "__main__":
     sam_use_quantization = False
     sam_quantization = "8bit"
     sam_freeze = False
-    sam_use_lora = False
+    sam_use_lora = True
     sam_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
-    image_text_connector_use_mixed_precision=False
+    image_text_connector_use_mixed_precision = True
     image_text_connector_mixed_precision="bf16"
     image_text_connector_num_layers=2
-    text_sam_connector_use_mixed_precision=False
+    text_sam_connector_use_mixed_precision = True
     text_sam_connector_mixed_precision="bf16"
     text_sam_connector_tokens=8
-    image_sam_connector_use_mixed_precision=False
+    image_sam_connector_use_mixed_precision = True
     image_sam_connector_mixed_precision="bf16"
     print(f"\nUsing device: {device}")
 
