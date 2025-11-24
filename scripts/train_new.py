@@ -1,7 +1,20 @@
+import os
+import json
+import time
+import numpy as np
+from PIL import Image, ImageDraw
+from pathlib import Path
+from dataclasses import dataclass
 import peft as p
 import torch as t
 import typing as ty
 import transformers as tf
+from torch.utils.data import Dataset, DataLoader
+from accelerate import Accelerator
+import torchvision.transforms as T
+from accelerate import Accelerator
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class ImageEncoder(t.nn.Module):
     """
@@ -568,28 +581,18 @@ class ModifiedLISA(t.nn.Module):
 
         # Step 2: Process text with LLM
         text_features = self.text_encoder(input_ids, attention_mask)
-        # if self.dtype != t.float32:
-        #     text_features = text_features.to(self.dtype)
 
         # Step 3: Project vision features to LLM space
         vision_features_projected = self.image_text_connector(vision_features_seq)
-        # if self.dtype != t.float32 and vision_features_projected.dtype != self.dtype:
-        #     vision_features_projected = vision_features_projected.to(self.dtype)
 
         # Step 4: Fuse vision and language
         fused_features = t.cat([vision_features_projected, text_features], dim=1)
-        # if fused_features.dtype != self.dtype and self.dtype != t.float32:
-        #     fused_features = fused_features.to(self.dtype)
 
         # Step 5: Extract prompt embeddings
         prompt_embeddings = self.text_sam_connector(fused_features)
-        # if self.dtype != t.float32 and prompt_embeddings.dtype != self.dtype:
-        #     prompt_embeddings = prompt_embeddings.to(self.dtype)
 
         # Step 6a: Adapt vision features to SAM's format
         sam_image_embeddings = self.image_sam_connector(vision_features_spatial)
-        # if self.dtype != t.float32 and sam_image_embeddings.dtype != self.dtype:
-        #     sam_image_embeddings = sam_image_embeddings.to(self.dtype)
 
         # Step 6b: Decode masks using pretrained SAM
         masks, iou_predictions = self.sam_decoder(sam_image_embeddings, prompt_embeddings, multimask_output=multimask_output)
@@ -622,100 +625,642 @@ class ModifiedLISA(t.nn.Module):
                 trainable_params += param.numel()
         print(f"\nTrainable params: {trainable_params:,} || All params: {all_param:,} || Trainable%: {100 * trainable_params / all_param:.2f}%")
 
-# Example usage
-if __name__ == "__main__":
-    vocabulary_size = 32000
-    max_length = 50
-    img_h, img_w = 224, 224
-    device = "cuda" if t.cuda.is_available() else "cpu"
-    lora_r = 16
-    lora_alpha = 32
-    lora_dropout = 0.1
-    image_encoder_model_name = 'openai/clip-vit-base-patch16'
-    image_encoder_use_mixed_precision = True
-    image_encoder_mixed_precision = "fp16"
-    image_encoder_use_quantization = False
-    image_encoder_quantization = "8bit"
-    image_encoder_freeze = False
-    image_encoder_use_lora = True
-    image_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
-    text_encoder_model_name = 'meta-llama/Llama-3.2-1B' # 'openai-community/gpt2'
-    text_encoder_use_mixed_precision = True
-    text_encoder_mixed_precision = "fp16"
-    text_encoder_use_quantization = False
-    text_encoder_quantization = "8bit"
-    text_encoder_freeze = False
-    text_encoder_use_lora = True
-    text_encoder_lora_target_modules = ['q_proj', 'k_proj', 'v_proj'] # ['c_proj', 'c_attn']
-    sam_model_name = 'facebook/sam-vit-base'
-    sam_use_mixed_precision = True
-    sam_mixed_precision = "fp16"
-    sam_use_quantization = False
-    sam_quantization = "8bit"
-    sam_freeze = False
-    sam_use_lora = True
-    sam_lora_target_modules = ['q_proj', 'k_proj', 'v_proj']
-    image_text_connector_use_mixed_precision = True
-    image_text_connector_mixed_precision="bf16"
-    image_text_connector_num_layers=2
-    text_sam_connector_use_mixed_precision = True
-    text_sam_connector_mixed_precision="bf16"
-    text_sam_connector_tokens=8
-    image_sam_connector_use_mixed_precision = True
-    image_sam_connector_mixed_precision="bf16"
-    print(f"\nUsing device: {device}")
+@dataclass
+class TrainingConfig:
+    # Paths
+    data_root: str = "/home/bhavya-shah/Projects/EEE598-DLFA"
+    train_json: str = "train.json"
+    train_dir: str = "train"
+    val_dir: str = "val"
+    test_dir: str = "test"
+    output_dir: str = "outputs"
+    checkpoint_dir: str = "checkpoints"
 
-    model = ModifiedLISA(
-        device=device,
-        image_encoder_model_name=image_encoder_model_name,
-        image_encoder_use_mixed_precision=image_encoder_use_mixed_precision,
-        image_encoder_mixed_precision=image_encoder_mixed_precision,
-        image_encoder_use_quantization=image_encoder_use_quantization,
-        image_encoder_quantization=image_encoder_quantization,
-        image_encoder_freeze=image_encoder_freeze,
-        image_encoder_use_lora=image_encoder_use_lora,
-        image_encoder_lora_r=lora_r,
-        image_encoder_lora_target_modules=image_encoder_lora_target_modules,
-        image_encoder_lora_alpha=lora_alpha,
-        image_encoder_lora_dropout=lora_dropout,
-        text_encoder_model_name=text_encoder_model_name,
-        text_encoder_use_mixed_precision=text_encoder_use_mixed_precision,
-        text_encoder_mixed_precision=text_encoder_mixed_precision,
-        text_encoder_use_quantization=text_encoder_use_quantization,
-        text_encoder_quantization=text_encoder_quantization,
-        text_encoder_freeze=text_encoder_freeze,
-        text_encoder_use_lora=text_encoder_use_lora,
-        text_encoder_lora_r=lora_r,
-        text_encoder_lora_alpha=lora_alpha,
-        text_encoder_lora_dropout=lora_dropout,
-        text_encoder_lora_target_modules=text_encoder_lora_target_modules,
-        sam_model_name=sam_model_name,
-        sam_use_mixed_precision=sam_use_mixed_precision,
-        sam_mixed_precision=sam_mixed_precision,
-        sam_use_quantization=sam_use_quantization,
-        sam_quantization=sam_quantization,
-        sam_freeze=sam_freeze,
-        sam_use_lora=sam_use_lora,
-        sam_lora_r=lora_r,
-        sam_lora_alpha=lora_alpha,
-        sam_lora_target_modules=sam_lora_target_modules,
-        sam_lora_dropout=lora_dropout,
-        image_text_connector_use_mixed_precision=image_text_connector_use_mixed_precision,
-        image_text_connector_mixed_precision=image_text_connector_mixed_precision,
-        image_text_connector_num_layers=image_text_connector_num_layers,
-        text_sam_connector_use_mixed_precision=text_sam_connector_use_mixed_precision,
-        text_sam_connector_mixed_precision=text_sam_connector_mixed_precision,
-        text_sam_connector_tokens=text_sam_connector_tokens,
-        image_sam_connector_use_mixed_precision=image_sam_connector_use_mixed_precision,
-        image_sam_connector_mixed_precision=image_sam_connector_mixed_precision,
-    )
-    model.print_trainable_parameters()
+    # Training hyperparameters (optimized for 8GB GPU)
+    num_epochs: int = 100
+    batch_size: int = 1
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.01
+    warmup_steps: int = 50
+    gradient_accumulation_steps: int = 8
+    max_grad_norm: float = 1.0
 
-    batch_size = 2
-    pixel_values = t.randn(batch_size, 3, img_h, img_w, dtype=t.float32).to(device)
-    input_ids = t.randint(0, vocabulary_size, (batch_size, max_length), dtype=t.int32).to(device)
-    attention_mask = t.ones(batch_size, max_length, dtype=t.int32).to(device)
+    # Model config
+    img_size: int = 256
+    max_text_length: int = 128
+    max_train_samples: int = None  # Limit for faster testing
+    max_val_samples: int = None  # Limit for faster testing
 
-    print("\nRunning forward pass...")
+    # LoRA config
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+
+    # Model names
+    image_encoder_model_name: str = 'openai/clip-vit-base-patch16'
+    text_encoder_model_name: str = 'meta-llama/Llama-3.2-1B'
+    sam_model_name: str = 'facebook/sam-vit-base'
+
+    # Mixed precision settings
+    use_mixed_precision: bool = False
+    mixed_precision: str = "no"
+
+    # Quantization settings
+    use_quantization: bool = False
+    quantization: str = "8bit"
+
+    # Training modes
+    freeze_image_encoder: bool = False
+    freeze_text_encoder: bool = False
+    freeze_sam: bool = False
+    use_lora: bool = True
+
+class ReasonSegDataset(Dataset):
+    """Dataset for ReasonSeg"""
+    def __init__(self, data_root, json_file=None, image_dir=None, img_size=224, max_samples=None):
+        self.data_root = Path(data_root)
+        self.img_size = img_size
+        self.samples = []
+        
+        if json_file:
+            # Load from train.json
+            json_path = self.data_root / json_file
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            for item in data:
+                img_path = self.data_root / image_dir / item['image']
+                json_path = self.data_root / image_dir / item['json']
+                if img_path.exists() and json_path.exists():
+                    self.samples.append({
+                        'image_path': img_path,
+                        'json_path': json_path,
+                        'query': item['query']
+                    })
+        elif image_dir:
+            # Load from directory (val/test)
+            img_dir = self.data_root / image_dir
+            for json_file in img_dir.glob("*.json"):
+                img_file = json_file.with_suffix('.jpg')
+                if img_file.exists():
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                    query = data['text'][0] if 'text' in data else ""
+                    self.samples.append({
+                        'image_path': img_file,
+                        'json_path': json_file,
+                        'query': query
+                    })
+        
+        # Limit samples if specified
+        if max_samples is not None and len(self.samples) > max_samples:
+            self.samples = self.samples[:max_samples]
+        
+        self.transform = T.Compose([
+            T.Resize((img_size, img_size)),
+            T.ToTensor(),
+        ])
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        
+        # Load image
+        image = Image.open(sample['image_path']).convert('RGB')
+        
+        # Load mask from JSON
+        with open(sample['json_path'], 'r') as f:
+            data = json.load(f)
+        
+        # Create mask from polygon points
+        orig_w, orig_h = image.size
+        mask_pil = Image.new('L', (orig_w, orig_h), 0)
+        draw = ImageDraw.Draw(mask_pil)
+        
+        if 'shapes' in data and len(data['shapes']) > 0:
+            for shape in data['shapes']:
+                if 'points' in shape:
+                    points = [(float(x), float(y)) for x, y in shape['points']]
+                    draw.polygon(points, fill=255)
+        
+        # Resize mask to match img_size
+        mask_pil = mask_pil.resize((self.img_size, self.img_size), Image.BILINEAR)
+        mask = np.array(mask_pil, dtype=np.float32) / 255.0
+        mask_tensor = t.from_numpy(mask).unsqueeze(0)  # [1, H, W]
+        
+        return {
+            'image': image,
+            'query': sample['query'],
+            'mask': mask_tensor,
+            'image_path': str(sample['image_path'])
+        }
+
+def collate_fn(batch):
+    """Custom collate function for batching"""
+    images = [item['image'] for item in batch]  # Keep as PIL images
+    queries = [item['query'] for item in batch]
+    masks = t.stack([item['mask'] for item in batch])
+    image_paths = [item['image_path'] for item in batch]
+    
+    return {
+        'images': images,
+        'queries': queries,
+        'masks': masks,
+        'image_paths': image_paths
+    }
+
+def compute_iou(pred_mask, gt_mask, threshold=0.5):
+    """Compute Intersection over Union"""
+    pred_mask = (pred_mask > threshold).float()
+    gt_mask = (gt_mask > threshold).float()
+    
+    intersection = (pred_mask * gt_mask).sum()
+    union = pred_mask.sum() + gt_mask.sum() - intersection
+    
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+    
+    return (intersection / union).item()
+
+def compute_giou(pred_mask, gt_mask, threshold=0.5):
+    """Compute Generalized IoU"""
+    pred_mask = (pred_mask > threshold).float()
+    gt_mask = (gt_mask > threshold).float()
+    
+    # IoU
+    intersection = (pred_mask * gt_mask).sum()
+    union = pred_mask.sum() + gt_mask.sum() - intersection
+    
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+    
+    iou = intersection / union
+    
+    # Find smallest enclosing box
+    pred_coords = t.nonzero(pred_mask, as_tuple=False)
+    gt_coords = t.nonzero(gt_mask, as_tuple=False)
+    
+    if len(pred_coords) == 0 or len(gt_coords) == 0:
+        return iou.item()
+    
+    all_coords = t.cat([pred_coords, gt_coords], dim=0)
+    c_min = all_coords.min(dim=0)[0]
+    c_max = all_coords.max(dim=0)[0]
+    
+    c_area = (c_max - c_min + 1).prod()
+    
+    giou = iou - (c_area - union) / c_area
+    return giou.item()
+
+def compute_ciou(pred_mask, gt_mask, threshold=0.5):
+    """Compute Complete IoU for masks"""
+    pred_mask = (pred_mask > threshold).float()
+    gt_mask = (gt_mask > threshold).float()
+    
+    # IoU
+    intersection = (pred_mask * gt_mask).sum()
+    union = pred_mask.sum() + gt_mask.sum() - intersection
+    
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+    
+    iou = intersection / union
+    
+    # Get coordinates
+    pred_coords = t.nonzero(pred_mask, as_tuple=False)
+    gt_coords = t.nonzero(gt_mask, as_tuple=False)
+    
+    if len(pred_coords) == 0 or len(gt_coords) == 0:
+        return iou.item()
+    
+    # Enclosing box (for GIoU part)
+    all_coords = t.cat([pred_coords, gt_coords], dim=0)
+    c_min = all_coords.min(dim=0)[0]
+    c_max = all_coords.max(dim=0)[0]
+    c_area = (c_max - c_min + 1).prod()
+    
+    # GIoU term
+    giou = iou - (c_area - union) / c_area
+    
+    # Centroid distance penalty for CIoU
+    pred_center = pred_coords.float().mean(dim=0)
+    gt_center = gt_coords.float().mean(dim=0)
+    center_distance = ((pred_center - gt_center) ** 2).sum()
+    diagonal_distance = ((c_max - c_min) ** 2).sum() + 1e-7
+    
+    # Aspect ratio penalty
+    pred_h = pred_coords[:, 0].max() - pred_coords[:, 0].min() + 1
+    pred_w = pred_coords[:, 1].max() - pred_coords[:, 1].min() + 1
+    gt_h = gt_coords[:, 0].max() - gt_coords[:, 0].min() + 1
+    gt_w = gt_coords[:, 1].max() - gt_coords[:, 1].min() + 1
+    
+    v = (4 / (3.14159 ** 2)) * ((t.atan(gt_w / (gt_h + 1e-7)) - t.atan(pred_w / (pred_h + 1e-7))) ** 2)
+    alpha = v / (1 - iou + v + 1e-7)
+    
+    # Complete IoU
+    ciou = giou - (center_distance / diagonal_distance) - alpha * v
+    
+    return ciou.item()
+
+def dice_loss(pred_masks, gt_masks, smooth=1.0):
+    """Dice loss for segmentation"""
+    # Don't sigmoid here - apply to logits
+    pred_flat = pred_masks.view(pred_masks.size(0), -1)
+    gt_flat = gt_masks.view(gt_masks.size(0), -1)
+    
+    # Apply sigmoid for dice calculation
+    pred_sigmoid = t.sigmoid(pred_flat)
+    
+    intersection = (pred_sigmoid * gt_flat).sum(dim=1)
+    union = pred_sigmoid.sum(dim=1) + gt_flat.sum(dim=1)
+    
+    dice = (2. * intersection + smooth) / (union + smooth)
+    return 1 - dice.mean()
+
+def focal_loss(pred_masks, gt_masks, alpha=0.25, gamma=2.0):
+    """Focal loss for segmentation"""
+    # Use BCE with logits (safe for autocast)
+    bce = t.nn.functional.binary_cross_entropy_with_logits(pred_masks, gt_masks, reduction='none')
+    
+    # Get probabilities for focal term
+    pred_probs = t.sigmoid(pred_masks)
+    pt = t.where(gt_masks == 1, pred_probs, 1 - pred_probs)
+    focal_term = (1 - pt) ** gamma
+    
+    loss = alpha * focal_term * bce
+    return loss.mean()
+
+def combined_loss(pred_masks, gt_masks, iou_preds=None):
+    """Combined loss: Dice + Focal"""
+    # Resize predicted masks to match ground truth
+    if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
+        pred_masks = t.nn.functional.interpolate(
+            pred_masks, 
+            size=gt_masks.shape[-2:], 
+            mode='bilinear', 
+            align_corners=False
+        )
+    
+    # If multiple masks predicted, take the first one
+    if pred_masks.dim() == 4 and pred_masks.size(1) > 1:
+        pred_masks = pred_masks[:, 0:1, :, :]
+    
+    loss = dice_loss(pred_masks, gt_masks) + focal_loss(pred_masks, gt_masks)
+    return loss
+
+class BenchmarkMetrics:
+    """Track benchmarking metrics"""
+    def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        self.iou_scores = []
+        self.giou_scores = []
+        self.ciou_scores = []
+        self.losses = []
+        self.iteration_times = []
+        self.memory_usage = []
+        self.start_time = None
+        self.epoch_start_time = None
+    
+    def update(self, loss, pred_masks, gt_masks, iter_time):
+        self.losses.append(loss)
+        self.iteration_times.append(iter_time)
+        
+        # Resize predictions to match ground truth
+        if pred_masks.shape[-2:] != gt_masks.shape[-2:]:
+            pred_masks = t.nn.functional.interpolate(
+                pred_masks, 
+                size=gt_masks.shape[-2:], 
+                mode='bilinear', 
+                align_corners=False
+            )
+        
+        # Take first mask if multiple
+        if pred_masks.dim() == 4 and pred_masks.size(1) > 1:
+            pred_masks = pred_masks[:, 0, :, :]
+        else:
+            pred_masks = pred_masks.squeeze(1)
+        
+        pred_masks = t.sigmoid(pred_masks)
+        
+        # Compute metrics for each sample in batch
+        batch_size = pred_masks.size(0)
+        for i in range(batch_size):
+            iou = compute_iou(pred_masks[i], gt_masks[i, 0])
+            giou = compute_giou(pred_masks[i], gt_masks[i, 0])
+            ciou = compute_ciou(pred_masks[i], gt_masks[i, 0])
+            
+            self.iou_scores.append(iou)
+            self.giou_scores.append(giou)
+            self.ciou_scores.append(ciou)
+        
+        # Track memory
+        if t.cuda.is_available():
+            mem = t.cuda.max_memory_allocated() / 1024**3  # GB
+            self.memory_usage.append(mem)
+    
+    def get_metrics(self):
+        return {
+            'loss': np.mean(self.losses) if self.losses else 0.0,
+            'iou': np.mean(self.iou_scores) if self.iou_scores else 0.0,
+            'giou': np.mean(self.giou_scores) if self.giou_scores else 0.0,
+            'ciou': np.mean(self.ciou_scores) if self.ciou_scores else 0.0,
+            'iter_per_sec': 1.0 / np.mean(self.iteration_times) if self.iteration_times else 0.0,
+            'avg_iter_time': np.mean(self.iteration_times) if self.iteration_times else 0.0,
+            'peak_memory_gb': max(self.memory_usage) if self.memory_usage else 0.0,
+        }
+
+def train_epoch(model, dataloader, optimizer, accelerator, metrics, config):
+    """Train for one epoch"""
+    model.train()
+    metrics.reset()
+    metrics.epoch_start_time = time.time()
+    
+    processor = tf.CLIPImageProcessor.from_pretrained(config.image_encoder_model_name)
+    # Get tokenizer once before the loop
+    if hasattr(model, 'module'):
+        tokenizer = model.module.text_encoder.tokenizer
+    else:
+        tokenizer = model.text_encoder.tokenizer
+    
+    for step, batch in enumerate(dataloader):
+        iter_start = time.time()
+        
+        # Prepare inputs
+        images = batch['images']  # Already PIL images
+        queries = batch['queries']
+        gt_masks = batch['masks']
+        
+        # Process images for CLIP
+        pixel_values = processor(images=images, return_tensors="pt")["pixel_values"]
+        pixel_values = pixel_values.to(accelerator.device)
+        
+        # Tokenize text
+        text_inputs = tokenizer(
+            queries, 
+            padding=True, 
+            truncation=True, 
+            max_length=config.max_text_length,
+            return_tensors="pt"
+        )
+        input_ids = text_inputs["input_ids"].to(accelerator.device)
+        attention_mask = text_inputs["attention_mask"].to(accelerator.device)
+        gt_masks = gt_masks.to(accelerator.device)
+        
+        # Forward pass
+        with accelerator.autocast():
+            pred_masks, iou_preds = model(pixel_values, input_ids, attention_mask, multimask_output=False)
+            loss = combined_loss(pred_masks, gt_masks, iou_preds)
+        
+        # Backward pass
+        accelerator.backward(loss)
+        
+        if (step + 1) % config.gradient_accumulation_steps == 0:
+            # Skip gradient clipping with FP16 due to accelerate limitations
+            # if accelerator.sync_gradients and config.max_grad_norm > 0:
+            #     accelerator.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            optimizer.step()
+            optimizer.zero_grad()
+        
+        iter_time = time.time() - iter_start
+        
+        # Update metrics
+        metrics.update(loss.item(), pred_masks.detach(), gt_masks, iter_time)
+        
+        if step % 5 == 0:
+            current_metrics = metrics.get_metrics()
+            accelerator.print(
+                f"Step {step}/{len(dataloader)} | "
+                f"Loss: {current_metrics['loss']:.4f} | "
+                f"IoU: {current_metrics['iou']:.4f} | "
+                f"gIoU: {current_metrics['giou']:.4f} | "
+                f"cIoU: {current_metrics['ciou']:.4f} | "
+                f"Iter/s: {current_metrics['iter_per_sec']:.2f} | "
+                f"Mem: {current_metrics['peak_memory_gb']:.2f}GB"
+            )
+    
+    epoch_time = time.time() - metrics.epoch_start_time
+    epoch_metrics = metrics.get_metrics()
+    epoch_metrics['epoch_time'] = epoch_time
+    
+    return epoch_metrics
+
+def validate(model, dataloader, accelerator, config):
+    """Validate the model"""
+    model.eval()
+    metrics = BenchmarkMetrics()
+    
+    processor = tf.CLIPImageProcessor.from_pretrained(config.image_encoder_model_name)
+    # Get tokenizer once before the loop
+    if hasattr(model, 'module'):
+        tokenizer = model.module.text_encoder.tokenizer
+    else:
+        tokenizer = model.text_encoder.tokenizer
+    
     with t.no_grad():
-        masks, iou_predictions = model(pixel_values, input_ids, attention_mask, multimask_output=True)
+        for batch in dataloader:
+            iter_start = time.time()
+            
+            images = batch['images']  # Already PIL images
+            queries = batch['queries']
+            gt_masks = batch['masks']
+            
+            # Process inputs
+            pixel_values = processor(images=images, return_tensors="pt")["pixel_values"]
+            pixel_values = pixel_values.to(accelerator.device)
+            
+            text_inputs = tokenizer(
+                queries, 
+                padding=True, 
+                truncation=True, 
+                max_length=config.max_text_length,
+                return_tensors="pt"
+            )
+            input_ids = text_inputs["input_ids"].to(accelerator.device)
+            attention_mask = text_inputs["attention_mask"].to(accelerator.device)
+            gt_masks = gt_masks.to(accelerator.device)
+            
+            # Forward pass
+            with accelerator.autocast():
+                pred_masks, iou_preds = model(pixel_values, input_ids, attention_mask, multimask_output=False)
+                loss = combined_loss(pred_masks, gt_masks, iou_preds)
+            
+            iter_time = time.time() - iter_start
+            metrics.update(loss.item(), pred_masks, gt_masks, iter_time)
+    
+    return metrics.get_metrics()
+
+def main():
+    # Initialize configuration
+    config = TrainingConfig()
+    
+    # Initialize accelerator
+    accelerator = Accelerator(
+        mixed_precision=config.mixed_precision if config.use_mixed_precision else "no",
+        gradient_accumulation_steps=config.gradient_accumulation_steps
+    )
+    
+    # Create output directories
+    os.makedirs(config.output_dir, exist_ok=True)
+    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    
+    # Initialize model
+    accelerator.print("Initializing ModifiedLISA model...")
+    model = ModifiedLISA(
+        device=str(accelerator.device),
+        image_encoder_model_name=config.image_encoder_model_name,
+        image_encoder_use_mixed_precision=config.use_mixed_precision,
+        image_encoder_mixed_precision=config.mixed_precision,
+        image_encoder_use_quantization=config.use_quantization,
+        image_encoder_quantization=config.quantization,
+        image_encoder_freeze=config.freeze_image_encoder,
+        image_encoder_use_lora=config.use_lora,
+        image_encoder_lora_r=config.lora_r,
+        image_encoder_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
+        image_encoder_lora_alpha=config.lora_alpha,
+        image_encoder_lora_dropout=config.lora_dropout,
+        text_encoder_model_name=config.text_encoder_model_name,
+        text_encoder_use_mixed_precision=config.use_mixed_precision,
+        text_encoder_mixed_precision=config.mixed_precision,
+        text_encoder_use_quantization=config.use_quantization,
+        text_encoder_quantization=config.quantization,
+        text_encoder_freeze=config.freeze_text_encoder,
+        text_encoder_use_lora=config.use_lora,
+        text_encoder_lora_r=config.lora_r,
+        text_encoder_lora_alpha=config.lora_alpha,
+        text_encoder_lora_dropout=config.lora_dropout,
+        text_encoder_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
+        sam_model_name=config.sam_model_name,
+        sam_use_mixed_precision=config.use_mixed_precision,
+        sam_mixed_precision=config.mixed_precision,
+        sam_use_quantization=config.use_quantization,
+        sam_quantization=config.quantization,
+        sam_freeze=config.freeze_sam,
+        sam_use_lora=config.use_lora,
+        sam_lora_r=config.lora_r,
+        sam_lora_alpha=config.lora_alpha,
+        sam_lora_target_modules=['q_proj', 'k_proj', 'v_proj'],
+        sam_lora_dropout=config.lora_dropout,
+        image_text_connector_use_mixed_precision=config.use_mixed_precision,
+        image_text_connector_mixed_precision=config.mixed_precision,
+        image_text_connector_num_layers=2,
+        text_sam_connector_use_mixed_precision=config.use_mixed_precision,
+        text_sam_connector_mixed_precision=config.mixed_precision,
+        text_sam_connector_tokens=8,
+        image_sam_connector_use_mixed_precision=config.use_mixed_precision,
+        image_sam_connector_mixed_precision=config.mixed_precision,
+    )
+
+    model.print_trainable_parameters()
+    
+    # Create datasets
+    accelerator.print("\nLoading datasets...")
+    train_dataset = ReasonSegDataset(
+        config.data_root, 
+        config.train_json, 
+        config.train_dir, 
+        config.img_size,
+        max_samples=config.max_train_samples
+    )
+    val_dataset = ReasonSegDataset(
+        config.data_root, 
+        image_dir=config.val_dir, 
+        img_size=config.img_size,
+        max_samples=config.max_val_samples
+    )
+    
+    accelerator.print(f"Train samples: {len(train_dataset)}")
+    accelerator.print(f"Val samples: {len(val_dataset)}")
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=config.batch_size, 
+        shuffle=True, 
+        collate_fn=collate_fn,
+        num_workers=4
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=config.batch_size, 
+        shuffle=False, 
+        collate_fn=collate_fn,
+        num_workers=4
+    )
+
+    # Initialize optimizer
+    optimizer = t.optim.AdamW(
+        model.parameters(), 
+        lr=config.learning_rate, 
+        weight_decay=config.weight_decay
+    )
+
+    # Prepare for distributed training
+    model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
+    
+    # Training loop
+    accelerator.print("\nStarting training...")
+    best_val_iou = 0.0
+    
+    for epoch in range(config.num_epochs):
+        accelerator.print(f"\n{'='*60}")
+        accelerator.print(f"Epoch {epoch + 1}/{config.num_epochs}")
+        accelerator.print(f"{'='*60}")
+        
+        # Train
+        train_metrics = train_epoch(model, train_loader, optimizer, accelerator, BenchmarkMetrics(), config)
+        
+        accelerator.print(f"\nTraining Metrics:")
+        accelerator.print(f"  Loss: {train_metrics['loss']:.4f}")
+        accelerator.print(f"  IoU: {train_metrics['iou']:.4f}")
+        accelerator.print(f"  gIoU: {train_metrics['giou']:.4f}")
+        accelerator.print(f"  cIoU: {train_metrics['ciou']:.4f}")
+        accelerator.print(f"  Iterations/sec: {train_metrics['iter_per_sec']:.2f}")
+        accelerator.print(f"  Avg iteration time: {train_metrics['avg_iter_time']:.3f}s")
+        accelerator.print(f"  Epoch time: {train_metrics['epoch_time']:.2f}s")
+        accelerator.print(f"  Peak memory: {train_metrics['peak_memory_gb']:.2f}GB")
+        
+        # Validate
+        val_metrics = validate(model, val_loader, accelerator, config)
+        
+        accelerator.print(f"\nValidation Metrics:")
+        accelerator.print(f"  Loss: {val_metrics['loss']:.4f}")
+        accelerator.print(f"  IoU: {val_metrics['iou']:.4f}")
+        accelerator.print(f"  gIoU: {val_metrics['giou']:.4f}")
+        accelerator.print(f"  cIoU: {val_metrics['ciou']:.4f}")
+        
+        # Save checkpoint
+        if val_metrics['iou'] > best_val_iou:
+            best_val_iou = val_metrics['iou']
+            accelerator.print(f"\nNew best validation IoU: {best_val_iou:.4f}")
+            
+            if accelerator.is_main_process:
+                unwrapped_model = accelerator.unwrap_model(model)
+                checkpoint_path = os.path.join(config.checkpoint_dir, f"best_model_epoch_{epoch+1}.pt")
+                t.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': unwrapped_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_iou': best_val_iou,
+                    'train_metrics': train_metrics,
+                    'val_metrics': val_metrics,
+                }, checkpoint_path)
+                accelerator.print(f"Checkpoint saved to {checkpoint_path}")
+        
+        # Save metrics to file
+        if accelerator.is_main_process:
+            metrics_file = os.path.join(config.output_dir, f"metrics_epoch_{epoch+1}.json")
+            with open(metrics_file, 'w') as f:
+                json.dump({
+                    'epoch': epoch + 1,
+                    'train': train_metrics,
+                    'val': val_metrics
+                }, f, indent=2)
+    
+    accelerator.print("\nTraining completed!")
+    accelerator.print(f"Best validation IoU: {best_val_iou:.4f}")
+
+if __name__ == "__main__":
+    main()
