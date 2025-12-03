@@ -222,3 +222,5 @@ test/*.jpeg
 test/*.json
 checkpoints/*.pt
 outputs/*.json
+*log.txt
+*.log
